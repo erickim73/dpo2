@@ -5,7 +5,7 @@ matplotlib
 numpy
 opencv_python
 pandas
-pyrosetta==2023.12+release.1d87148
+#pyrosetta==2023.12+release.1d87148
 sb3_contrib
 scipy
 Shapely

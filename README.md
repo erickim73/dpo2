@@ -16,7 +16,7 @@
 ## Materials Deformation (Sorted by Performance)
 | Algorithm | Materials Deformation |
 |-----------|----------------------|
-| DPO       | 6.296 ± 0.048        |
+| **DPO**   | **6.296 ± 0.048**    |
 | CrossQ    | 6.366 ± 0.028        |
 | S-TQC     | 6.470 ± 0.027        |
 | TRPO      | 6.469 ± 0.022        |
@@ -33,7 +33,7 @@
 ## Topological Materials Deformation (Sorted by Performance)
 | Algorithm | Topological Materials Deformation |
 |-----------|----------------------------------|
-| DPO       | 6.046 ± 0.083                    |
+| **DPO**   | **6.046 ± 0.083**                |
 | S-TRPO    | 6.461 ± 0.084                    |
 | DDPG      | 6.570 ± 0.082                    |
 | S-DDPG    | 6.642 ± 0.124                    |
@@ -50,7 +50,7 @@
 ## Molecular Dynamics (Sorted by Performance)
 | Algorithm | Molecular Dynamics   |
 |-----------|---------------------|
-| DPO       | 53.352 ± 0.055      |
+| **DPO**   | **53.352 ± 0.055**  |
 | DDPG      | 68.203 ± 0.000      |
 | TQC       | 76.874 ± 0.001      |
 | S-DDPG    | 82.946 ± 0.001      |

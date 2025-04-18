@@ -7,6 +7,64 @@
 - **Differential Policy Optimization (DPO)** introduces a differential formulation of reinforcement learning designed to improve trajectory consistency and sample efficiency in continuous control problems. Unlike conventional RL methods that rely on value-based formulations (Bellman equations, Q/V-functions), our method is based on a **dual, differential perspective** rooted in continuous-time control theory. Standard RL can be viewed as a discrete approximation of a control-theoretic integral formulation, which in turn admits a differential dual. We focus on building a **policy optimization method grounded in this differential dual**, enhanced by a **Hamiltonian prior**.
 ---
 
+## Results Summary
+
+### Shape Boundary Environment
+
+# Algorithm Performance Comparison
+
+## Materials Deformation (Sorted by Performance)
+| Algorithm | Materials Deformation |
+|-----------|----------------------|
+| DPO       | 6.296 ± 0.048        |
+| CrossQ    | 6.366 ± 0.028        |
+| S-TQC     | 6.470 ± 0.027        |
+| TRPO      | 6.469 ± 0.022        |
+| TQC       | 6.589 ± 0.048        |
+| S-CrossQ  | 6.829 ± 0.079        |
+| SAC       | 7.424 ± 0.047        |
+| S-TRPO    | 7.789 ± 0.114        |
+| S-SAC     | 8.762 ± 0.105        |
+| S-DDPG    | 9.503 ± 0.210        |
+| DDPG      | 15.421 ± 1.471       |
+| S-PPO     | 16.578 ± 0.909       |
+| PPO       | 20.524 ± 1.795       |
+
+## Topological Materials Deformation (Sorted by Performance)
+| Algorithm | Topological Materials Deformation |
+|-----------|----------------------------------|
+| DPO       | 6.046 ± 0.083                    |
+| S-TRPO    | 6.461 ± 0.084                    |
+| DDPG      | 6.570 ± 0.082                    |
+| S-DDPG    | 6.642 ± 0.124                    |
+| S-TQC     | 6.715 ± 0.098                    |
+| S-PPO     | 7.067 ± 0.126                    |
+| SAC       | 7.077 ± 0.093                    |
+| S-CrossQ  | 7.022 ± 0.117                    |
+| PPO       | 7.154 ± 0.102                    |
+| TRPO      | 7.167 ± 0.111                    |
+| TQC       | 7.121 ± 0.086                    |
+| S-SAC     | 7.200 ± 0.133                    |
+| CrossQ    | 7.208 ± 0.121                    |
+
+## Molecular Dynamics (Sorted by Performance)
+| Algorithm | Molecular Dynamics   |
+|-----------|---------------------|
+| DPO       | 53.352 ± 0.055      |
+| DDPG      | 68.203 ± 0.000      |
+| TQC       | 76.874 ± 0.001      |
+| S-DDPG    | 82.946 ± 0.001      |
+| S-SAC     | 126.130 ± 1.307     |
+| S-TQC     | 234.922 ± 3.075     |
+| S-CrossQ  | 335.683 ± 5.758     |
+| CrossQ    | 949.697 ± 11.119    |
+| SAC       | 1361.664 ± 12.808   |
+| S-TRPO    | 1842.280 ± 0.009    |
+| TRPO      | 1842.302 ± 0.009    |
+| S-PPO     | 1842.303 ± 0.012    |
+| PPO       | 1842.304 ± 0.010    |
+
+
 ### Key Features
 
 - **Differential RL Framework:** Optimizes local trajectory dynamics directly, bypassing cumulative reward maximization.

@@ -8,13 +8,6 @@
 ---
 
 ## Results Summary of Benchmarks 2
-# Reinforcement Learning Algorithm Benchmark Results
-
-This repository contains benchmark results for various reinforcement learning algorithms tested on three scientific simulation tasks.
-
-## Overview
-
-The benchmark evaluates 14 different algorithms, including standard implementations (DPO, TRPO, PPO, SAC, DDPG, CrossQ, TQC) and their stabilized variants (prefixed with S-).
 
 ## Performance Tables
 

@@ -221,9 +221,9 @@ Our benchmarking includes 15 algorithms, covering both standard and reward-resha
 ### Evaluation costs over time steps across different episodes are shown in:
 
 <div align="center">
-  <img src="/mnt/c/Users/DELL/dpo2/output/benchmark2_shape_boundary.png" width="300">
-  <img src="/mnt/c/Users/DELL/dpo2/output/benchmark2_shape.png" width="300">
-  <img src="/mnt/c/Users/DELL/dpo2/output/benchmark2_molecule.png" width="300">
+  <img src="output/benchmark2_shape_boundary.png" width="300">
+  <img src="output/benchmark2_shape.png" width="300">
+  <img src="output/benchmark2_molecule.png" width="300">
 </div>
 
 ### Memory Usage

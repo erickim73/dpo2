@@ -290,7 +290,7 @@ for env_name, disp in display_names.items():
         time_steps=TIMESTEPS[env_name],
         title=f"Benchmark-2 on {disp}",
         mode='bootstrap',
-        plot_dir=f"benchmark2_{env_name}.png"
+        plot_dir=f"benchmarks2_{env_name}.png"
     )
 
 elapsed = (time.time() - start) / 3600

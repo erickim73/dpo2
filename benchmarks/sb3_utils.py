@@ -91,6 +91,8 @@ def _load_benchmark_model(method, model_path):
         model = CrossQ.load(model_path)
     elif 'TQC' in method:
         model = TQC.load(model_path)
+    else:
+        raise ValueError(f"Unsupported method: {method}")
     return model
 
 def setup_benchmark_model(method, env, model_path):

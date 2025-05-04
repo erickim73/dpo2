@@ -7,7 +7,88 @@
 - **Differential Policy Optimization (DPO)** introduces a differential formulation of reinforcement learning designed to improve trajectory consistency and sample efficiency in continuous control problems. Unlike conventional RL methods that rely on value-based formulations (Bellman equations, Q/V-functions), our method is based on a **dual, differential perspective** rooted in continuous-time control theory. Standard RL can be viewed as a discrete approximation of a control-theoretic integral formulation, which in turn admits a differential dual. We focus on building a **policy optimization method grounded in this differential dual**, enhanced by a **Hamiltonian prior**.
 ---
 
-## Results Summary
+## Results Summary of Benchmarks 2
+# Reinforcement Learning Algorithm Benchmark Results
+
+This repository contains benchmark results for various reinforcement learning algorithms tested on three scientific simulation tasks.
+
+## Overview
+
+The benchmark evaluates 14 different algorithms, including standard implementations (DPO, TRPO, PPO, SAC, DDPG, CrossQ, TQC) and their stabilized variants (prefixed with S-).
+
+## Performance Tables
+
+### Materials Deformation (Sorted by Performance)
+| Algorithm | Materials Deformation |
+|-----------|----------------------|
+| **TRPO**  | **14.558 ± 15.022**  |
+| S-PPO     | 14.934 ± 15.519      |
+| TQC       | 14.939 ± 15.735      |
+| DDPG      | 15.037 ± 17.222      |
+| DPO       | 15.108 ± 17.706      |
+| S-DDPG    | 15.187 ± 22.364      |
+| S-CrossQ  | 15.195 ± 25.169      |
+| S-TQC     | 15.228 ± 16.680      |
+| S-TRPO    | 15.289 ± 17.230      |
+| CrossQ    | 15.388 ± 19.239      |
+| S-SAC     | 15.578 ± 24.315      |
+| PPO       | 15.565 ± 25.724      |
+| SAC       | 16.159 ± 35.383      |
+
+### Topological Materials Deformation (Sorted by Performance)
+| Algorithm | Topological Materials Deformation |
+|-----------|----------------------------------|
+| **S-DDPG**| **6.722 ± 1.069**                |
+| S-CrossQ  | 6.869 ± 0.982                    |
+| S-TRPO    | 6.974 ± 1.009                    |
+| S-TQC     | 7.002 ± 0.971                    |
+| SAC       | 7.153 ± 0.914                    |
+| DPO       | 7.183 ± 0.908                    |
+| DDPG      | 7.223 ± 1.105                    |
+| S-PPO     | 7.242 ± 0.930                    |
+| TQC       | 7.287 ± 0.894                    |
+| PPO       | 7.391 ± 0.899                    |
+| TRPO      | 7.422 ± 0.919                    |
+| S-SAC     | 7.456 ± 0.947                    |
+| CrossQ    | 7.701 ± 0.846                    |
+
+### Molecular Dynamics (Sorted by Performance)
+| Algorithm | Molecular Dynamics     |
+|-----------|------------------------|
+| **TQC**   | **72.035 ± 0.006**     |
+| DDPG      | 81.007 ± 0.006         |
+| S-DDPG    | 92.320 ± 0.011         |
+| S-SAC     | 104.333 ± 60.799       |
+| S-TQC     | 191.279 ± 90.721       |
+| CrossQ    | 473.610 ± 434.832      |
+| SAC       | 1099.944 ± 219.568     |
+| S-CrossQ  | 1657.196 ± 1337.184    |
+| DPO       | 1780.812 ± 0.395       |
+| S-TRPO    | 1841.956 ± 0.310       |
+| PPO       | 1842.024 ± 0.285       |
+| S-PPO     | 1842.029 ± 0.279       |
+| TRPO      | 1842.032 ± 0.280       |
+
+### Evaluation costs over time steps across different episodes are shown in:
+
+<div align="center">
+  <img src="output/benchmarks2_shape_boundary.png" width="300">
+  <img src="output/benchmarks2_shape.png" width="300">
+  <img src="output/benchmarks2_molecule.png" width="300">
+</div>
+
+## Key Findings
+
+Different algorithms excel in different domains:
+- **TRPO**: Best for general materials deformation
+- **S-DDPG**: Superior for topological materials deformation
+- **TQC**: Exceptional for molecular dynamics simulations
+
+The stabilized variants (S-prefix) demonstrated improved performance in topological materials tasks, suggesting that stability-enhancing modifications are beneficial for certain problem domains.
+
+For molecular dynamics, algorithm selection is particularly critical, with performance differences spanning orders of magnitude.
+
+## Results Summary of Benchmarks 1
 
 ### Shape Boundary Environment
 

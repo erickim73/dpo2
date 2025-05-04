@@ -14,20 +14,20 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Get correct environment
 def get_environment(env_name):
     if env_name == 'naive_shape_boundary':
-        return ShapeBoundary(naive=True)
+        return ShapeBoundary(naive=True, render_mode='rgb_array')
     if env_name == 'shape_boundary':
-        return ShapeBoundary()
+        return ShapeBoundary(render_mode='rgb_array')
     if env_name == 'naive_shape':
-        return Shape(naive=True)
+        return Shape(naive=True, render_mode='rgb_array')
     if env_name == 'shape':
-        return Shape()
+        return Shape(render_mode='rgb_array')
     pose = pyrosetta.pose_from_sequence('A'*8)
     # ('TTCCPSIVARSNFNVCRLPGTSEAICATYTGCIIIPGATCPGDYAN')
     # pyrosetta.pose_from_pdb("molecule_files/1AB1.pdb") #pyrosetta.pose_from_sequence('A' * 10)
     if env_name == 'naive_molecule':
-        return Molecule(pose=pose, naive=True)
+        return Molecule(pose=pose, naive=True, render_mode='rgb_array')
     if env_name == 'molecule':
-        return Molecule(pose=pose)
+        return Molecule(pose=pose, render_mode='rgb_array')
 
 def from_str_to_2D_arr(s):
     tokens = s[2:-2].split("],[")
@@ -94,21 +94,34 @@ def setup_main_net(env_name, zero_order, state_dim):
     return main_net
 
 
-def setup_dpo_model(method, env, env_name):
-    rate, _, step_size, _, _, _ = get_train_params(env_name)
-    zero_order = method.endswith('zero_order')
-    state_dim = env.state_dim
-    main_net = setup_main_net(env_name, zero_order, state_dim)
-    path = 'models/' + env_name + '_' + method + '.pth'
-    #main_net.load_state_dict(torch.load(path))
-    main_net.load_state_dict(torch.load(path, map_location=torch.device('cpu')))
-    main_net.to(DEVICE)
-    model = Policy(zero_order, main_net, rate, step_size)
+# Convert e.g. algo = "DPO_zero_order" to match your actual filename suffix
+def setup_dpo_model(algo, env, env_name):
+    import os
+    import torch
+    from policy import Policy
 
+    # 🛠 Patch here
+    if algo == "DPO":
+        algo = "DPO_zero_order"
+
+    path = os.path.join("models", f"{env_name}_{algo}.pth")
+
+    zero_order = 'zero_order' in algo
+    input_dim = env.observation_space.shape[0]
+    main_net = setup_main_net(env_name, zero_order, input_dim)
+
+    main_net.load_state_dict(torch.load(path, map_location=torch.device("cpu")))
+    main_net.eval()
+
+    model = Policy(env, main_net)
     return model
 
-### Plotting
-def _bootstrap(data, n_boot=2000, ci=68):
+
+
+
+# Plotting
+def _bootstrap(data, n_boot=2000, ci=68, random_state=42):
+    rng = np.random.default_rng(random_state)
     boot_dist = []
     for _ in range(int(n_boot)):
         resampler = np.random.randint(0, data.shape[0], data.shape[0])
@@ -119,32 +132,41 @@ def _bootstrap(data, n_boot=2000, ci=68):
     s2 = np.apply_along_axis(stats.scoreatpercentile, 0, b, 50.+ci/2.)
     return (s1,s2)
 
-def _tsplot(ax, x, data, mode='bootstrap', **kw):
+def _tsplot(ax, x, data, mode='bootstrap', label=None, color=None):
     est = np.mean(data, axis=0)
     if mode == 'bootstrap':
         cis = _bootstrap(data)
     else:
         sd = np.std(data, axis=0)
         cis = (est - sd, est + sd)
-    p2 = ax.fill_between(x, cis[0], cis[1], alpha=0.2, **kw)
-    p1 = ax.plot(x, est, **kw)
+    ax.fill_between(x, cis[0], cis[1], alpha=0.15, color=color)
+    line = ax.plot(x, est, label=label, color=color)[0]
     ax.margins(x=0)
-
-    return p1, p2
+    ax.grid(True, linestyle='--', alpha=0.4)
+    return line
 
 def plot_eval_benchmarks(eval_dict, time_steps, title, mode='bootstrap', 
-                         colors=['red', 'blue', 'green', 'orange'],
+                         colors=['red', 'blue', 'green', 'orange', 'purple', 'brown', 'cyan', 'magenta', 'olive'],
                          plot_dir='tmp.png'):
     methods = list(eval_dict.keys())
-    ax = plt.gca()
-    graphic_list = []
+    fig, ax = plt.subplots(figsize=(7, 4.5))  # wider layout
     for i, method in enumerate(methods):
         data = eval_dict[method]
-        _, p2 = _tsplot(ax, np.array(time_steps), data, mode, label=method, color=colors[i])
-        graphic_list.append(p2)
-    ax.legend(graphic_list, methods)
+        color = colors[i % len(colors)]
+        _tsplot(ax, np.array(time_steps), data, mode, label=method, color=color)
+
+    ax.legend(frameon=False, bbox_to_anchor=(1.04, 1), loc="upper left")
+    fig.subplots_adjust(right=0.75)
     ax.set_title(title)
     ax.set_xlabel('Timestamp')
     ax.set_ylabel('Evaluation cost')
-    plt.savefig('output/' + plot_dir)
-    plt.show()
+    # ---- cosmetic axis tweaks ----
+    if 'Molecular dynamics' in title:
+        ax.set_yscale('log')
+    elif 'Topological materials' in title:      # shape task stays 5‑10
+        ax.set_ylim(5, 10)
+    elif 'Materials deformation' in title:      # shape‑boundary needs larger window
+        ax.set_ylim(12, 20)        # or use auto‑range and clip spike instead
+    plt.tight_layout()
+    plt.savefig(f'output/{plot_dir}', dpi=140)
+    plt.close()

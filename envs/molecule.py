@@ -1,3 +1,6 @@
+import matplotlib.pyplot as plt
+import io
+from PIL import Image
 from typing import Optional
 import numpy as np
 import gymnasium as gym
@@ -13,7 +16,7 @@ MAX_ABS = 1e18
 ### Generic continuous environment for reduced Hamiltonian dynamics framework
 class Molecule(BBO):
     # 1e-2
-    def __init__(self, pose, naive=False, reset_scale=1e-2, step_size=1e-1, max_num_step=6):
+    def __init__(self, pose, naive=False, reset_scale=1e-2, step_size=1e-1, max_num_step=60, render_mode='human'):
         # Superclass setup
         super(Molecule, self).__init__(naive, step_size, max_num_step)
 
@@ -29,6 +32,7 @@ class Molecule(BBO):
         self.min_act = -90; self.max_act = 90 
         self.action_space = spaces.Box(low=self.min_act, high=self.max_act, shape=(self.state_dim,), dtype=np.float32)      
         self.state = None
+        self.render_mode = render_mode
 
         # Reset scale
         self.reset_scale = reset_scale
@@ -73,6 +77,28 @@ class Molecule(BBO):
             self.pose.set_phi(k+1, self.state[2*k]) 
             self.pose.set_psi(k+1, self.state[2*k+1])
         self.pmm.apply(self.pose)
+
+        if self.render_mode == "rgb_array":
+            # Render Ramachandran plot of phi/psi angles
+            phis = self.state[::2]
+            psis = self.state[1::2]
+
+            fig, ax = plt.subplots(figsize=(3, 3))
+            ax.scatter(phis, psis, c='blue', s=20)
+            ax.set_xlim(-180, 180)
+            ax.set_ylim(-180, 180)
+            ax.set_xlabel('Phi')
+            ax.set_ylabel('Psi')
+            ax.set_title('Ramachandran Plot')
+            ax.grid(True)
+
+            buf = io.BytesIO()
+            plt.tight_layout()
+            plt.savefig(buf, format='png')
+            plt.close(fig)
+            buf.seek(0)
+            image = Image.open(buf).convert('RGB')
+            return np.array(image)
 
         return None
      

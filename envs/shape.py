@@ -11,7 +11,7 @@ ImgDim = namedtuple('ImgDim', 'width height')
 class Shape(BBO):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, naive=False, step_size=1e-2, state_dim=64, max_num_step=20):
+    def __init__(self, naive=False, step_size=1e-2, state_dim=64, max_num_step=20, render_mode='human'):
         # Superclass setup
         super(Shape, self).__init__(naive, step_size, max_num_step)
 
@@ -22,6 +22,7 @@ class Shape(BBO):
         self.action_space = spaces.Box(low=self.min_act, high=self.max_act, shape=(self.state_dim,), dtype=np.float32)
         self.observation_space = spaces.Box(low=self.min_val, high=self.max_val, shape=(self.state_dim,), dtype=np.float32)
         self.state = None
+        self.render_mode = render_mode
 
         # Shape interpolation info
         self.xk, self.yk = np.mgrid[-1:1:8j, -1:1:8j]

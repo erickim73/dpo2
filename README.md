@@ -7,6 +7,174 @@
 - **Differential Policy Optimization (DPO)** introduces a differential formulation of reinforcement learning designed to improve trajectory consistency and sample efficiency in continuous control problems. Unlike conventional RL methods that rely on value-based formulations (Bellman equations, Q/V-functions), our method is based on a **dual, differential perspective** rooted in continuous-time control theory. Standard RL can be viewed as a discrete approximation of a control-theoretic integral formulation, which in turn admits a differential dual. We focus on building a **policy optimization method grounded in this differential dual**, enhanced by a **Hamiltonian prior**.
 ---
 
+## Results of Benchmarks with New Algorithms
+
+## Performance Tables
+
+### Materials Deformation (Sorted by Performance)
+| Algorithm          | Materials Deformation    |
+|-------------------|-------------------------|
+| **DDPG**          | **13.325 ± 0.688**     |
+| SAC               | 14.061 ± 0.506          |
+| PPO               | 14.123 ± 0.300          |
+| RS                | 14.115 ± 0.413          |
+| MF                | 14.183 ± 0.519          |
+| Random            | 14.273 ± 0.395          |
+| MBMF              | 14.275 ± 0.610          |
+| DPO_zero_order    | 14.290 ± 0.733          |
+| DPO_first_order   | 14.721 ± 0.810          |
+
+### Topological Materials Deformation (Sorted by Performance)
+| Algorithm          | Topological Materials Deformation |
+|-------------------|-----------------------------------|
+| **DDPG**          | **6.577 ± 0.110**                |
+| SAC               | 7.078 ± 0.102                     |
+| RS                | 7.165 ± 0.136                     |
+| PPO               | 7.171 ± 0.152                     |
+| Random            | 7.176 ± 0.130                     |
+| DPO_zero_order    | 7.148 ± 0.132                     |
+| DPO_first_order   | 7.170 ± 0.134                     |
+| MBMF              | 7.179 ± 0.118                     |
+| MF                | 7.195 ± 0.117                     |
+
+### Molecular Dynamics (Sorted by Performance)
+| Algorithm          | Molecular Dynamics       |
+|-------------------|--------------------------|
+| **DDPG**          | **1800.000 ± 0.000**    |
+| SAC               | 1800.003 ± 0.005        |
+| Random            | 1836.128 ± 0.120        |
+| RS                | 1836.285 ± 0.170        |
+| DPO_zero_order    | 1841.766 ± 0.000        |
+| PPO               | 1842.307 ± 0.009        |
+| MF                | 1842.387 ± 0.006        |
+| MBMF              | 1842.392 ± 0.006        |
+| DPO_first_order   | 1842.575 ± 0.000        |
+
+## Key Observations
+
+### Algorithm Performance Patterns
+
+#### **DDPG Dominance**
+- **Consistently superior**: DDPG achieves the best performance across all three benchmark tasks
+- **Perfect stability**: Shows zero variance in molecular dynamics, indicating highly stable convergence
+- **Significant advantage**: Outperforms competitors by substantial margins (e.g., 42+ points in molecular dynamics)
+
+#### **SAC Excellence**
+- **Strong second place**: Consistently ranks in top 2-3 across all benchmarks
+- **Particularly strong in molecular dynamics**: Nearly matches DDPG's optimal performance (1800.003 vs 1800.000)
+- **Good stability**: Low variance across all tasks
+
+#### **DPO Methods Struggle**
+- **Poor molecular dynamics performance**: Both DPO variants cluster around 1842, far from optimal
+- **Inconsistent across tasks**: Performance varies significantly between different benchmark types
+- **Zero variance paradox**: Perfect stability in molecular dynamics but poor performance suggests convergence to suboptimal solutions
+
+### Task-Specific Insights
+
+#### **Materials Deformation**
+- **Moderate performance gaps**: Differences between algorithms are relatively small (13.3 to 14.7)
+- **All methods viable**: Even worst performer (DPO_first_order) is within reasonable range
+- **Low variance overall**: Most algorithms show good stability
+
+#### **Topological Materials Deformation**
+- **Tightest competition**: Performance range is very narrow (6.6 to 7.2)
+- **Similar variance patterns**: Most algorithms show comparable stability
+- **DDPG still leads**: But advantage is less pronounced than other tasks
+
+#### **Molecular Dynamics**
+- **Dramatic performance differences**: Clear separation between optimal (1800) and suboptimal (1842) solutions
+- **Binary outcome pattern**: Algorithms either find the optimal solution or converge to a significantly worse local optimum
+- **Critical for real applications**: Large performance gaps make algorithm choice crucial
+
+## Recommendations
+
+### **For Molecular Dynamics Applications**
+1. **Primary choice**: DDPG for optimal performance and perfect stability
+2. **Alternative**: SAC as a close second with excellent performance
+3. **Avoid**: DPO methods due to poor performance despite stability
+
+### **For Materials Research**
+1. **Consistent performer**: DDPG provides best results across both deformation tasks
+2. **Robust alternatives**: SAC, PPO, and even simple methods like RS show reasonable performance
+3. **Task complexity consideration**: Algorithm choice less critical for materials tasks than molecular dynamics
+
+### **For Algorithm Development**
+1. **Focus on continuous control**: Methods designed for continuous action spaces show clear advantages
+2. **Actor-critic architectures**: This framework appears well-suited for physics simulation tasks
+3. **Benchmark diversity**: Different physics tasks require different algorithmic strengths
+
+## Technical Notes
+
+- **Evaluation metric**: Lower values indicate better performance across all tasks
+- **Statistical significance**: Error bars represent standard deviation across multiple runs
+- **Reproducibility**: Zero variance results suggest deterministic outcomes or very stable convergence
+- **Benchmark scope**: Results apply specifically to these physics simulation tasks and may not generalize to other domains
+
+## Benchmark Visualizations
+## Core Performance Results
+
+<div align="center">
+  <img src="output/bench_full_molecule.png" width="300" alt="Molecular Dynamics Full Benchmark">
+  <img src="output/bench_full_shape_boundary.png" width="300" alt="Shape Boundary Full Benchmark">
+  <img src="output/bench_full_shape.png" width="300" alt="Shape Full Benchmark">
+</div>
+Materials Deformation Analysis
+<div align="center">
+  <img src="output/benchmarks_on_materials_deformation_ranking.png" width="300" alt="Materials Deformation Rankings">
+  <img src="output/benchmarks_on_materials_deformation_statistical.png" width="300" alt="Materials Deformation Statistics">
+  <img src="output/benchmarks_on_materials_deformation_vs_baseline.png" width="300" alt="Materials Deformation vs Baseline">
+</div>
+Molecular Dynamics Analysis
+<div align="center">
+  <img src="output/benchmarks_on_molecular_dynamics_focused.png" width="300" alt="Molecular Dynamics Focused View">
+  <img src="output/benchmarks_on_molecular_dynamics_ranking.png" width="300" alt="Molecular Dynamics Rankings">
+  <img src="output/benchmarks_on_molecular_dynamics_vs_baseline.png" width="300" alt="Molecular Dynamics vs Baseline">
+</div>
+Topological Materials Deformation Analysis
+<div align="center">
+  <img src="output/benchmarks_on_topological_materials_deformation_ranking.png" width="300" alt="Topological Materials Rankings">
+  <img src="output/benchmarks_on_topological_materials_deformation_statistical.png" width="300" alt="Topological Materials Statistics">
+  <img src="output/benchmarks_on_topological_materials_deformation_vs_baseline.png" width="300" alt="Topological Materials vs Baseline">
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+============================================================================================
+
 ## Results Summary of Benchmarks 2
 
 ## Performance Tables

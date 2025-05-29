@@ -121,20 +121,20 @@
 Materials Deformation Analysis
 <div align="center">
   <img src="output/benchmarks_on_materials_deformation_ranking.png" width="300" alt="Materials Deformation Rankings">
-  <img src="output/benchmarks_on_materials_deformation_statistical.png" width="300" alt="Materials Deformation Statistics">
-  <img src="output/benchmarks_on_materials_deformation_vs_baseline.png" width="300" alt="Materials Deformation vs Baseline">
+  <img src="output/benchmarks_on_materials_deformation_statistical.png" width="400" alt="Materials Deformation Statistics">
+  <img src="output/benchmarks_on_materials_deformation_vs_baseline.png" width="400" alt="Materials Deformation vs Baseline">
 </div>
 Molecular Dynamics Analysis
 <div align="center">
-  <img src="output/benchmarks_on_molecular_dynamics_focused.png" width="300" alt="Molecular Dynamics Focused View">
   <img src="output/benchmarks_on_molecular_dynamics_ranking.png" width="300" alt="Molecular Dynamics Rankings">
-  <img src="output/benchmarks_on_molecular_dynamics_vs_baseline.png" width="300" alt="Molecular Dynamics vs Baseline">
+  <img src="output/benchmarks_on_molecular_dynamics_focused.png" width="400" alt="Molecular Dynamics Focused View">
+  <img src="output/benchmarks_on_molecular_dynamics_vs_baseline.png" width="400" alt="Molecular Dynamics vs Baseline">
 </div>
 Topological Materials Deformation Analysis
 <div align="center">
   <img src="output/benchmarks_on_topological_materials_deformation_ranking.png" width="300" alt="Topological Materials Rankings">
-  <img src="output/benchmarks_on_topological_materials_deformation_statistical.png" width="300" alt="Topological Materials Statistics">
-  <img src="output/benchmarks_on_topological_materials_deformation_vs_baseline.png" width="300" alt="Topological Materials vs Baseline">
+  <img src="output/benchmarks_on_topological_materials_deformation_statistical.png" width="400" alt="Topological Materials Statistics">
+  <img src="output/benchmarks_on_topological_materials_deformation_vs_baseline.png" width="400" alt="Topological Materials vs Baseline">
 </div>
 
 

@@ -96,7 +96,7 @@ def _load_benchmark_model(method, model_path):
     return model
 
 def setup_benchmark_model(method, env, model_path):
-    model = _load_benchmark_model(method, model_path)
+    model = _load_benchmark_model(method, f"benchmarks/models/{model_path}")
     model.set_env(env)
 
     return model

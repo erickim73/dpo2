@@ -1,5 +1,4 @@
 import matplotlib.pyplot as plt
-import io
 from PIL import Image
 from typing import Optional
 import numpy as np
@@ -9,6 +8,7 @@ import pyrosetta
 from pyrosetta import *
 from pyrosetta.teaching import *
 from envs.bbo import BBO
+import io as std_io
 
 pyrosetta.init()
 MAX_ABS = 1e18
@@ -18,7 +18,7 @@ class Molecule(BBO):
     # 1e-2
     def __init__(self, pose, naive=False, reset_scale=1e-2, step_size=1e-1, max_num_step=60, render_mode='human'):
         # Superclass setup
-        super(Molecule, self).__init__(naive, step_size, max_num_step)
+        super().__init__(naive, step_size, max_num_step)
 
         # Molecule info
         self.pose = pose
@@ -92,7 +92,7 @@ class Molecule(BBO):
             ax.set_title('Ramachandran Plot')
             ax.grid(True)
 
-            buf = io.BytesIO()
+            buf = std_io.BytesIO()
             plt.tight_layout()
             plt.savefig(buf, format='png')
             plt.close(fig)

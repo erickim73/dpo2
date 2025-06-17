@@ -38,7 +38,7 @@ class Shape(BBO):
         #  - naive: if True, use simple reward = -val. else use pmp-shaped reward
         #  - step_size: scaling factor how much each action perturbs the step
         #  - max_num_step: maximum number of steps before episode terminates
-        super(Shape, self).__init__(naive, step_size, max_num_step)
+        super().__init__(naive, step_size, max_num_step)
 
         # State and action info 
         
@@ -195,7 +195,7 @@ def spline_interp(z, xk, yk, xg, yg):
     """
     # Create a smooth spline from the coarse shape grid. 
     # z is the grid of shape heights (the state reshaped). xk, yk are the 8x8 coordinate grids.
-    tck = interpolate.bisplrep(xk, yk, z)
+    tck = interpolate.bisplrep(xk, yk, z, s=100, nxest=20, nyest=20)
     # Evaluate the spline on a 50x50 grid (xg, yg). zint is now a smooth 50x50 float image, where values go from -1 to 1
     zint = interpolate.bisplev(xg[:,0], yg[0,:], tck)
     # zint is between [-1, 1]

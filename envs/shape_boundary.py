@@ -19,14 +19,14 @@ class ShapeBoundary(BBO):
         "render_fps": 15,
     }
 
-    def __init__(self, naive=False, step_size=1e-2, ctrl_state_dim=16, max_num_step=20, render_mode='human', degree=3, n_internal_knots=4):
+    def __init__(self, naive=False, step_size=1e-2, ctrl_state_dim=36, max_num_step=20, render_mode='human', degree=2, n_internal_knots=4):
         # Initialize the base BBO environment
         #  - naive: if True, use simple reward = -val. else use pmp-shaped reward
         #  - step_size: scaling factor how much each action perturbs the step
         #  - max_num_step: maximum number of steps before episode terminates
         super(ShapeBoundary, self).__init__(naive, step_size, max_num_step)
 
-        # ——— spline + knot control parameters ———
+        # spline + knot control parameters
         self.ctrl_dim        = ctrl_state_dim                   # original 16 dims → 8 control‐points
         self.num_coef        = ctrl_state_dim // 2
         self.knot_dim        = n_internal_knots                 # e.g. 4 internal knots
@@ -44,32 +44,78 @@ class ShapeBoundary(BBO):
         self.ts   = np.linspace(0, 1, 80)
         self.verts = None
         
-         # ——— Define initial & target circles ———
+         # Define initial & target circles
         # Build a *uniform open* knot vector of length = num_ctrl + degree + 1
         num_internal = self.num_coef - self.degree - 1
         # interior knots: i/(num_internal+1) for i=1..num_internal
         internal_knots = [i/(num_internal+1) for i in range(1, num_internal+1)]
         kv = [0.0]*(self.degree+1) + internal_knots + [1.0]*(self.degree+1)
+        self.base_kv = kv
 
-        # radii (you can tweak these)
+        # radii 
         R_big = 1.0      # unit circle
         R_small = 0.5    # half-radius circle
 
-        # parametric angles for control points
-        angles = np.linspace(0, 2*np.pi, self.num_coef, endpoint=False)
+        # Define improved "J" and target "E" shapes
+        J_pts = np.array([
+            [-0.1, 2.0],  # Top left of horizontal bar
+            [0.6, 2.0],   # Top right of horizontal bar
+            [0.6, 1.8],   # Top right corner
+            [0.4, 1.8],   # Inner corner of bar
+            [0.4, 1.6],   # Start of vertical descent
+            [0.4, 1.3],   # Upper vertical
+            [0.4, 1.0],   # Mid vertical
+            [0.4, 0.7],   # Lower vertical
+            [0.4, 0.4],   # Lower vertical before hook
+            [0.4, 0.25],  # Hook transition
+            [0.3, 0.1],   # Hook bend start
+            [0.1, 0.0],   # Hook bend middle
+            [-0.1, -0.05],# Bottom of hook
+            [-0.3, 0.0],  # Left extent of hook
+            [-0.4, 0.1],  # Hook left bottom curve
+            [-0.4, 0.25], # Hook left side lower
+            [-0.35, 0.35],# Hook left side upper
+            [-0.25, 0.3]  # Hook closure
+        ])
 
-        # control points on big & small circles (2D)
-        big_pts   = np.stack([np.cos(angles), np.sin(angles)], axis=1) * R_big
-        small_pts = np.stack([np.cos(angles), np.sin(angles)], axis=1) * R_small
+        E_pts = np.array([
+            [-0.35, -0.05], # Bottom left corner - rounded
+            [-0.4, 0.1],    # Left bottom curve
+            [-0.4, 0.6],    # Left side lower
+            [-0.4, 1.2],    # Left side middle
+            [-0.4, 1.8],    # Left side upper
+            [-0.4, 2.0],    # Top left corner
+            [-0.1, 2.0],    # Top left inner
+            [0.2, 2.0],     # Top line middle
+            [0.4, 2.0],     # Top right end
+            [0.4, 1.7],     # Top right corner
+            [0.1, 1.7],     # Top line return
+            [-0.2, 1.7],    # Top line to left edge
+            [-0.2, 1.3],    # Left edge upper
+            [0.2, 1.3],     # Middle line end
+            [0.3, 1.0],     # Middle line right edge
+            [-0.2, 1.0],    # Middle to left edge
+            [-0.2, 0.3],    # Left edge lower
+            [0.35, -0.05]   # Bottom right corner - rounded
+        ])
+        
+        # Use weights to emphasize key structural points
+        j_weights = [2.0, 2.5, 2.5, 2.0, 1.5, 1.0, 1.0, 1.0, 1.5, 2.0, 2.5, 2.5, 2.5, 2.5, 2.0, 1.8, 1.5, 1.5]
+        e_weights = [0.7, 1.0, 1.5, 1.5, 2.0, 2.5, 2.0, 2.0, 2.5, 2.5, 2.0, 1.5, 1.5, 2.0, 2.0, 1.5, 1.2, 0.7]
 
-        # store flat initial state + zero knot‐offsets
-        self.initial_ctrl = big_pts.flatten()
+        
+        # Create the target spline (E shape)
         self.target_spline = sp.NURBS(
             degrees=[self.degree],
             knot_vectors=[kv],
-            control_points=small_pts,
-            weights=[1.0]*self.num_coef
+            control_points=E_pts,
+            weights=e_weights
         )
+        
+        self.j_weights = j_weights
+
+        # flatten for initial state (J shape)
+        self.initial_ctrl = J_pts.flatten()
 
         # Rendering
         self.render_mode = render_mode
@@ -89,17 +135,8 @@ class ShapeBoundary(BBO):
         ctrl_pts = flat.reshape(self.num_coef, 2)
 
         # next = raw offsets → positive → simplex → increasing (0,1)
-        if self.knot_dim > 0:
-            raw = self.state[self.ctrl_dim:]
-            exp = np.exp(raw - raw.max())      # stabilize exp
-            probs = exp / exp.sum()
-            knots_internal = np.cumsum(probs)
-        else:
-            knots_internal = []
-
-        # build full open knot vector
-        kv = [0.0]*(self.degree+1) + list(knots_internal) + [1.0]*(self.degree+1)
-        return ctrl_pts, kv
+        # always use the base_kv we computed in __init__
+        return ctrl_pts, self.base_kv
 
 
 
@@ -160,7 +197,7 @@ class ShapeBoundary(BBO):
 
         # 3) Precompute verts for rendering
         ctrl_pts, kv = self._unpack_state()
-        spline = sp.NURBS([self.degree], [kv], ctrl_pts, weights=[1.0]*self.num_coef)
+        spline = sp.NURBS([self.degree], [kv], ctrl_pts, weights=self.j_weights)
         coords = spline.evaluate(self.ts.reshape(-1,1))
         scaled = coords/np.max(np.abs(coords))*100 + 300
         self.verts = list(zip(scaled[:,0], scaled[:,1]))

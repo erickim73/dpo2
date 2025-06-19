@@ -19,7 +19,7 @@ class ShapeBoundary(BBO):
         "render_fps": 15,
     }
 
-    def __init__(self, naive=False, step_size=1e-2, ctrl_state_dim=36, max_num_step=20, render_mode='human', degree=2, n_internal_knots=4):
+    def __init__(self, naive=False, step_size=1e-2, ctrl_state_dim=36, max_num_step=20, render_mode='human', degree=2, n_internal_knots=14, train_ctrl=True, train_weight=True, train_knot=True):
         # Initialize the base BBO environment
         #  - naive: if True, use simple reward = -val. else use pmp-shaped reward
         #  - step_size: scaling factor how much each action perturbs the step
@@ -27,14 +27,30 @@ class ShapeBoundary(BBO):
         super(ShapeBoundary, self).__init__(naive, step_size, max_num_step)
 
         # spline + knot control parameters
-        self.ctrl_dim        = ctrl_state_dim                   # original 16 dims → 8 control‐points
+        self.ctrl_dim        = ctrl_state_dim                   # e.g. 36 control points (2D×18)
         self.num_coef        = ctrl_state_dim // 2
         self.knot_dim        = n_internal_knots                 # e.g. 4 internal knots
         self.state_dim       = self.ctrl_dim + self.knot_dim    # total dims
+        
+        self.weight_dim = self.num_coef # one weight per control point
+        # total state = [ctrl_pts (2D×num_coef) + weights + knot‐offsets]
+        self.state_dim  = self.ctrl_dim + self.weight_dim + self.knot_dim
+
+        # now redefine your spaces to match the new dimension:
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(self.state_dim,), dtype=np.float32
+        )
+        self.action_space = spaces.Box(
+            low=-1.0, high=1.0, shape=(self.state_dim,), dtype=np.float32
+        )
 
         self.degree          = degree
         self.max_num_step    = max_num_step
         self.step_size       = step_size
+        
+        self.learn_ctrl   = train_ctrl
+        self.learn_weight = train_weight
+        self.learn_knot   = train_knot
 
         # redefine spaces with new state_dim
         self.observation_space = spaces.Box(-4, 4, (self.state_dim,), dtype=np.float32)
@@ -44,17 +60,16 @@ class ShapeBoundary(BBO):
         self.ts   = np.linspace(0, 1, 80)
         self.verts = None
         
-         # Define initial & target circles
-        # Build a *uniform open* knot vector of length = num_ctrl + degree + 1
-        num_internal = self.num_coef - self.degree - 1
-        # interior knots: i/(num_internal+1) for i=1..num_internal
+        # Define initial & target circles
+        # Build a *uniform open* knot vector using exactly n_internal_knots
+        num_internal = self.knot_dim
         internal_knots = [i/(num_internal+1) for i in range(1, num_internal+1)]
-        kv = [0.0]*(self.degree+1) + internal_knots + [1.0]*(self.degree+1)
+        kv = [0.0] * (self.degree + 1) + internal_knots + [1.0] * (self.degree + 1)
         self.base_kv = kv
-
-        # radii 
-        R_big = 1.0      # unit circle
-        R_small = 0.5    # half-radius circle
+        # store the *uniform* internal knots so offsets are added to these
+        self.base_internal = np.array(
+            kv[self.degree+1 : - (self.degree+1)]
+        )
 
         # Define improved "J" and target "E" shapes
         J_pts = np.array([
@@ -113,6 +128,8 @@ class ShapeBoundary(BBO):
         )
         
         self.j_weights = j_weights
+        # as a numpy array for easy math later
+        self.initial_weights = np.array(self.j_weights, dtype=np.float32)
 
         # flatten for initial state (J shape)
         self.initial_ctrl = J_pts.flatten()
@@ -128,46 +145,73 @@ class ShapeBoundary(BBO):
         # Spline specific paramters
         self.degree = degree  # Degree of the spline (default is cubic, degree=3)
         self.n_internal_knots = n_internal_knots  # Number of internal knots in the spline
+        self.base_internal = np.array(self.base_kv[self.degree+1 : - (self.degree+1)])
     
     def _unpack_state(self):
-        # first part = control‐point coords
-        flat = self.state[:self.ctrl_dim]
+        # 1) control points
+        flat    = self.state[:self.ctrl_dim]
         ctrl_pts = flat.reshape(self.num_coef, 2)
 
-        # next = raw offsets → positive → simplex → increasing (0,1)
-        # always use the base_kv we computed in __init__
-        return ctrl_pts, self.base_kv
+        # 2) weights
+        w_slice = slice(self.ctrl_dim,
+                        self.ctrl_dim + self.weight_dim)
+        weights = self.state[w_slice]  # shape=(num_coef,)
 
+        # 3) raw knot offsets
+        k_slice = slice(self.ctrl_dim + self.weight_dim, None)
+        raw_knot = self.state[k_slice] # shape=(knot_dim,)
+        # clamp offsets into [0,1]
+        raw_offset = np.clip(raw_knot, 0.0, 1.0)
+        # add them to your *uniform* internal knots
+        internal = np.sort(self.base_internal + raw_offset)
+
+        # rebuild full open knot vector
+        kv = ([0.0] * (self.degree+1)
+            + internal.tolist()
+            + [1.0] * (self.degree+1))
+
+        return ctrl_pts, weights, kv
 
 
     def step(self, action):
-        # 1) Apply delta to full state (ctrl pts + knot offsets)
+        # ——— optionally disable learning of some params ———
+        if not self.learn_ctrl:
+            action[: self.ctrl_dim] = 0
+        if not self.learn_weight:
+            action[self.ctrl_dim : self.ctrl_dim + self.weight_dim] = 0
+        if not self.learn_knot:
+            action[-self.knot_dim :] = 0
+
+        # 1) Apply delta to full state (ctrl pts + weights + knot offsets)
         self.state += self.step_size * action
 
-        # 2) Build a splinepy NURBS from state
-        ctrl_pts, kv = self._unpack_state()
+        # 2) Unpack into control points, weights, and knot vector
+        ctrl_pts, weights, kv = self._unpack_state()
+
+        # 3) Build NURBS with all three sets of learnable parameters
         spline = sp.NURBS(
             degrees=[self.degree],
             knot_vectors=[kv],
             control_points=ctrl_pts,
-            weights=[1.0]*self.num_coef
+            weights=weights.tolist()
         )
 
-        # 3) Sample it and compute geometry
-        coords  = spline.evaluate(self.ts.reshape(-1,1))   # shape (80,2)
+        # 4) Sample & compute geometry exactly as before
+        coords  = spline.evaluate(self.ts.reshape(-1,1))
         polygon = Polygon(zip(coords[:,0], coords[:,1]))
 
-        # 4) Prepare verts for rendering
+        # 5) Prepare verts for rendering
         scaled = coords / np.max(np.abs(coords)) * 100 + 300
         self.verts = list(zip(scaled[:,0], scaled[:,1]))
 
-        # 5) Reward logic (same as before, but val based on isoperim or replace with your chamfer)
-        done = (polygon.area == 0) or (self.num_step >= self.max_num_step)
-        dist = self._distance(spline, self.target_spline)
+        # 6) Compute reward + done
+        done   = (polygon.area == 0) or (self.num_step >= self.max_num_step)
+        dist   = self._distance(spline, self.target_spline)
         reward = -dist
         self.num_step += 1
 
         return self.state.copy(), reward, done, False, {}
+
 
     
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
@@ -183,23 +227,29 @@ class ShapeBoundary(BBO):
         return self.reset_at(mode='half_random'), {}
     
     def reset_at(self, mode='unused'):
-        """Always start on the big circle, no randomness."""
+        """Start on the J shape, with control points, weights, and zero knot offsets."""
         self.num_step = 0
 
-        # 1) control‐point portion = the big circle
-        ctrl = self.initial_ctrl.copy()
+        # 1) control‐point portion = the big circle (flattened)
+        ctrl    = self.initial_ctrl.copy()            # shape=(ctrl_dim,)
 
-        # 2) knot offsets start at zero
-        if self.knot_dim > 0:
-            self.state = np.concatenate([ctrl, np.zeros(self.knot_dim)])
-        else:
-            self.state = ctrl
+        # 2) weight portion = your preset J‐weights
+        weights = self.initial_weights.copy()         # shape=(weight_dim,)
 
-        # 3) Precompute verts for rendering
-        ctrl_pts, kv = self._unpack_state()
-        spline = sp.NURBS([self.degree], [kv], ctrl_pts, weights=self.j_weights)
-        coords = spline.evaluate(self.ts.reshape(-1,1))
-        scaled = coords/np.max(np.abs(coords))*100 + 300
+        # 3) knot‐offsets portion = zeros
+        zeros   = np.zeros(self.knot_dim, dtype=np.float32)
+
+        # → full state vector
+        self.state = np.concatenate([ctrl, weights, zeros])
+
+        # Precompute rendering verts exactly as before, but now using our new unpack:
+        ctrl_pts, weights, kv = self._unpack_state()
+        spline   = sp.NURBS(degrees=[self.degree],
+                            knot_vectors=[kv],
+                            control_points=ctrl_pts,
+                            weights=weights.tolist())
+        coords   = spline.evaluate(self.ts.reshape(-1,1))
+        scaled   = coords/np.max(np.abs(coords))*100 + 300
         self.verts = list(zip(scaled[:,0], scaled[:,1]))
 
         return self.state.copy()
@@ -258,8 +308,8 @@ class ShapeBoundary(BBO):
             pygame.quit()
             self.isopen = False
             
-    def _distance(self, a, b, samples=100):
-        t = np.linspace(0,1,samples).reshape(-1,1)
-        pa = a.evaluate(t)
-        pb = b.evaluate(t)
-        return np.mean(np.linalg.norm(pa - pb, axis=1))
+    def _distance(self, a, b, samples=100): 
+        t = np.linspace(0,1,samples).reshape(-1,1) # Sample 100 values in [0, 1]
+        pa = a.evaluate(t) # Get 100 (x, y) points from spline a
+        pb = b.evaluate(t) # Get 100 (x, y) points from spline b
+        return np.mean(np.linalg.norm(pa - pb, axis=1)) # Average L2 distance between corresponding points

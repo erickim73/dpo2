@@ -7,6 +7,9 @@ from pygame import gfxdraw
 # BBO: A base environment implementing basic discounting and reward calculation
 from envs.bbo import BBO
 import splinepy as sp
+from scipy.spatial import Delaunay
+import math
+
 
 # A large numeric constant used to penalize degenerate shapes
 MAX_ACT = 1e4
@@ -19,7 +22,26 @@ class ShapeBoundary(BBO):
         "render_fps": 15,
     }
 
-    def __init__(self, naive=False, step_size=1e-2, ctrl_state_dim=36, max_num_step=20, render_mode='human', degree=2, n_internal_knots=14, train_ctrl=True, train_weight=True, train_knot=True):
+    def __init__(self, naive=False, 
+                 step_size=1e-2, 
+                 ctrl_state_dim=36, 
+                 max_num_step=20, 
+                 render_mode='human', 
+                 degree=2, 
+                 n_internal_knots=14, 
+                 train_ctrl=True, 
+                 train_weight=True, 
+                 train_knot=True, 
+                 alpha_ctrl: float=0.2,
+                 alpha_weight: float=0.2,
+                 alpha_knot: float=0.6,
+                 alpha_vel: float=0.3, # penalize rapid shape changes
+                 alpha_energy: float=0.05, # penalize large actions (energy clost)
+                 alpha_repulsion: float=0.1, # weight for repulsive spring penalty
+                 repulse_k: float=7.0, # spring constant k
+                 repulse_epsilon: float=1e-3, # small term to avoid division by zero
+                 lambda_decay: float = 3.0,  # decay rate for control→(weight+knot) transition
+                ):
         # Initialize the base BBO environment
         #  - naive: if True, use simple reward = -val. else use pmp-shaped reward
         #  - step_size: scaling factor how much each action perturbs the step
@@ -51,6 +73,31 @@ class ShapeBoundary(BBO):
         self.learn_ctrl   = train_ctrl
         self.learn_weight = train_weight
         self.learn_knot   = train_knot
+        
+        # how much each sub-reward contributes
+        self.alpha_ctrl   = alpha_ctrl
+        self.alpha_weight = alpha_weight
+        self.alpha_knot  = alpha_knot
+        
+        self.alpha_vel   = alpha_vel
+        self.alpha_energy = alpha_energy
+        
+        # Repulsive Energy Constraints
+        self.alpha_repulsion = alpha_repulsion
+        self.repulse_k = repulse_k
+        self.repulse_epsilon = repulse_epsilon
+        
+        self.sigma = 0.4        # desired “rest” distance
+        self.lambda_decay = lambda_decay  # decay factor for repulsion energy
+        
+        # Initialize reward tracking
+        self.last_rewards = {
+            'ctrl':      0.0,
+            'weight':    0.0,
+            'knot':      0.0,
+            'repulsion': 0.0,
+            'total':     0.0
+        }
 
         # redefine spaces with new state_dim
         self.observation_space = spaces.Box(-4, 4, (self.state_dim,), dtype=np.float32)
@@ -133,6 +180,24 @@ class ShapeBoundary(BBO):
 
         # flatten for initial state (J shape)
         self.initial_ctrl = J_pts.flatten()
+        
+        # Repulsive spring step
+        # Compute which control points to repel (non-adjacent in the Delaunay mesh)
+        init_ctrl_pts = J_pts # shape=(num_coef, 2)
+        delaunay = Delaunay(init_ctrl_pts)
+        # Collect all edges from each triangle
+        edges = {
+            tuple(sorted(e))
+            for tri in delaunay.simplices
+            for e in [(tri[0],tri[1]), (tri[1],tri[2]), (tri[0],tri[2])]
+        }
+        n_pts = init_ctrl_pts.shape[0]
+        # All i<j pairs that are not in the edges
+        self.non_adjacent_pairs = [
+         (i,j)
+         for i in range(n_pts) for j in range(i+1, n_pts)
+         if (i,j) not in edges
+     ]
 
         # Rendering
         self.render_mode = render_mode
@@ -171,12 +236,64 @@ class ShapeBoundary(BBO):
             + [1.0] * (self.degree+1))
 
         return ctrl_pts, weights, kv
+    
+    def _compute_ctrl_reward(self, dist: float) -> float:
+        # amplify geometry term
+        return -2.0 * dist
+    
+    def _compute_weight_reward(self, weights: np.ndarray) -> float:
+        # encourage weights -> target weights (mean absolute error)
+        target = np.asarray(self.target_spline.weights, dtype=np.float32)
+        return -float(np.mean(np.abs(weights - target)))
+    
+    def _compute_knot_reward(self, internal: np.ndarray) -> float:
+        # encourage internal knots -> target (mean absolute error ×2)
+        targ = np.array(
+            self.target_spline.knot_vectors[0][self.degree+1:-(self.degree+1)]
+        )
+        return -5.0 * float(np.mean(np.abs(internal - targ)))
+    
+    def _compute_velocity_reward(self, ctrl_pts: np.ndarray) -> float:
+        # penalize large instantaneous velocity of control points
+        if not hasattr(self, 'prev_ctrl_pts'):
+            return 0.0
+        v = ctrl_pts - self.prev_ctrl_pts
+        speed = np.linalg.norm(v, axis=1).mean()
+        return -float(speed)
+
+    def _compute_energy_penalty(self, action: np.ndarray) -> float:
+        # penalize squared‐magnitude of the action vector (approx. work/energy)
+        return -float(np.sum(action**2))
+    
+    def _compute_repulsive_energy(self, ctrl_pts: np.ndarray) -> float:
+        """
+        Purely-repulsive “spring”: only when two non-adjacent points
+        get closer than self.sigma, with energy = ½·k·(σ - d)².
+        """
+        energy = 0.0
+        for i, j in self.non_adjacent_pairs:
+            d = np.linalg.norm(ctrl_pts[i] - ctrl_pts[j])
+            if d < self.sigma:
+                δ = self.sigma - d
+                energy += 0.5 * self.repulse_k * (δ * δ)
+        return energy
+
+
+
+    
+    # splitting the reward into 3 different terms, alpha1 * reward1 + alpha2 * reward2 + alpha3 * reward3 == 1
+    # has to be as a function as time. when you get closer to end, you do course motion, increase the weight for the knots. Initially, weights for the knots are pretty small because it shouldn't be wobbling.
+    # after plotting, you can check them. Nice to see them in a hack. 
 
 
     def step(self, action):
+        # --- unpack old ctrl_pts for velocity term ---
+        old_ctrl, _, _ = self._unpack_state()
+        self.prev_ctrl_pts = old_ctrl.copy()
+
         # ——— optionally disable learning of some params ———
         if not self.learn_ctrl:
-            action[: self.ctrl_dim] = 0
+            action[:self.ctrl_dim] = 0
         if not self.learn_weight:
             action[self.ctrl_dim : self.ctrl_dim + self.weight_dim] = 0
         if not self.learn_knot:
@@ -187,6 +304,12 @@ class ShapeBoundary(BBO):
 
         # 2) Unpack into control points, weights, and knot vector
         ctrl_pts, weights, kv = self._unpack_state()
+
+        # — compute repulsion energy penalty (start soft, finish strong) —
+        t_norm = self.num_step / float(self.max_num_step)
+        alpha_rep = self.alpha_repulsion * (0.1 + 0.9 * t_norm)
+        rep_energy = self._compute_repulsive_energy(ctrl_pts) if self.learn_ctrl else 0.0
+        reward_rep = -alpha_rep * rep_energy
 
         # 3) Build NURBS with all three sets of learnable parameters
         spline = sp.NURBS(
@@ -204,14 +327,59 @@ class ShapeBoundary(BBO):
         scaled = coords / np.max(np.abs(coords)) * 100 + 300
         self.verts = list(zip(scaled[:,0], scaled[:,1]))
 
-        # 6) Compute reward + done
-        done   = (polygon.area == 0) or (self.num_step >= self.max_num_step)
-        dist   = self._distance(spline, self.target_spline)
-        reward = -dist
+        # 6) Compute individual sub‐rewards
+        # 6a) Control‐point geometry reward
+        dist = self._distance(spline, self.target_spline)
+        reward_ctrl = self._compute_ctrl_reward(dist) if self.learn_ctrl else 0.0
+
+        # 6b) Weight reward
+        reward_weight = self._compute_weight_reward(weights) if self.learn_weight else 0.0
+
+        # 6c) Knot reward
+        internal = np.array(kv[self.degree+1:-(self.degree+1)])
+        reward_knot = self._compute_knot_reward(internal) if self.learn_knot else 0.0
+
+        # 6d) Velocity penalty
+        reward_vel = self._compute_velocity_reward(ctrl_pts) if self.learn_ctrl else 0.0
+
+        # 6e) Action‐energy penalty
+        reward_energy = self._compute_energy_penalty(action)
+
+        # 6f) Dynamic weighting via exponential decay
+        decay = math.exp(-self.lambda_decay * t_norm)
+        alpha_ctrl_dyn   = self.alpha_ctrl   *  decay
+        alpha_weight_dyn = self.alpha_weight * (1 - decay) * 0.5
+        alpha_knot_dyn   = self.alpha_knot   * (1 - decay) * 0.5
+
+        # 6g) Combine everything
+        total_reward = (
+            alpha_ctrl_dyn    * reward_ctrl
+            + alpha_weight_dyn * reward_weight
+            + alpha_knot_dyn   * reward_knot
+            + self.alpha_vel   * reward_vel
+            + self.alpha_energy * reward_energy
+            + reward_rep
+        )
+
+        # 7) Save for analysis/plotting
+        self.last_rewards = {
+            'ctrl':      reward_ctrl,
+            'weight':    reward_weight,
+            'knot':      reward_knot,
+            'vel':       reward_vel,
+            'energy':    reward_energy,
+            'repulsion': reward_rep,
+            'total':     total_reward
+        }
+
+        # 8) Termination check
+        done = (polygon.area == 0) or (self.num_step >= self.max_num_step)
         self.num_step += 1
 
-        return self.state.copy(), reward, done, False, {}
-
+        # 9) Return new state, reward, done, truncated, info
+        return self.state.copy(), total_reward, done, False, {
+            "repulsion_energy": rep_energy
+        }
 
     
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):

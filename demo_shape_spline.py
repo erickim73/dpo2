@@ -11,8 +11,11 @@ from matplotlib.animation import FuncAnimation
 
 from envs.shape_boundary import ShapeBoundary
 
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, message=".*tight_layout.*")
+
 class EnhancedSplineVisualizer:
-    def __init__(self, env, figsize=(16, 10)):
+    def __init__(self, env, figsize=(18, 12)):
         self.env = env
         self.figsize = figsize
         # Evaluate the target spline at sampled time points ts to get target shape coordinates
@@ -28,17 +31,31 @@ class EnhancedSplineVisualizer:
             'background': '#F8F8FF',  # Ghost white
             'text': '#2F4F4F',        # Dark slate gray
             'knots': '#FF8C00',       # Dark orange
-            'weights': '#DC143C'      # Crimson
+            'weights': '#DC143C',     # Crimson
+            'ctrl_reward': '#FF4500', # Orange red
+            'weight_reward': '#32CD32', # Lime green
+            'knot_reward': '#8A2BE2',  # Blue violet
+            'repulsion': '#8B008B'     # ADD THIS: Dark magenta for repulsion
         }
         
         # Store trajectory data
         self.trajectory_data = []
+        
+        # Store separate reward histories
         self.reward_history = []
+        self.ctrl_reward_history = []
+        self.weight_reward_history = []
+        self.knot_reward_history = []
         self.distance_history = []
         
         # Store knot and weight histories
         self.knot_history = []
         self.weight_history = []
+        
+        # Store repulsion history
+        self.repulsion_reward_history = []
+        self.repulsion_energy_history = []
+        self.control_point_distances = [] # For heatmap visualization
         
         # Store initial values for comparison
         self.initial_knots = None
@@ -79,58 +96,97 @@ class EnhancedSplineVisualizer:
         centroid = np.mean(ctrl_pts, axis=0)
         self.trajectory_data.append(centroid.copy())
         
-        # Store the reward value for the reward history plot
-        self.reward_history.append(reward)
+        # Store reward histories (get individual rewards from environment)
+        if hasattr(self.env, 'last_rewards'):
+            self.ctrl_reward_history.append(self.env.last_rewards['ctrl'])
+            self.weight_reward_history.append(self.env.last_rewards['weight'])
+            self.knot_reward_history.append(self.env.last_rewards['knot'])
+            self.reward_history.append(self.env.last_rewards['total'])
+            
+            self.repulsion_reward_history.append(self.env.last_rewards['repulsion'])
+            self.reward_history.append(self.env.last_rewards['total'])
+            
+            repulsion_energy = self.env._compute_repulsive_energy(ctrl_pts)
+            self.repulsion_energy_history.append(repulsion_energy)
+            
+            distances = self._compute_distance_matrix(ctrl_pts)
+            self.control_point_distances.append(distances)
+        else:
+            # Fallback if environment doesn't have separate rewards
+            self.reward_history.append(reward)
+            self.ctrl_reward_history.append(reward)
+            self.weight_reward_history.append(0.0)
+            self.knot_reward_history.append(0.0)
+            self.repulsion_reward_history.append(0.0)
+            self.repulsion_energy_history.append(0.0)
         
-        # Compute and store the distance to the target (used for distance plot)
-        dist = -reward  # The reward is negative distance, so distance = -reward
+        # Compute distance for distance history
+        dist = self.env._distance(current_spline, self.env.target_spline)
         self.distance_history.append(dist)
         
         
         # Create a new figure with a custom background color and size
         fig = plt.figure(figsize=self.figsize, facecolor=self.colors['background'])
-        # Create a 3-row by 4-column grid for subplots with spacing defined
+        # Create a 4-row by 4-column grid for subplots with spacing defined
         gs = fig.add_gridspec(3, 4, height_ratios=[3, 1, 1], width_ratios=[2, 2, 1, 1], 
-                             hspace=0.4, wspace=0.3)
+                         hspace=0.4, wspace=0.3)
         
         # Plot 1: Main shape comparison (target vs. current spline)
         ax_main = fig.add_subplot(gs[0, :2]) # Span first two columns of top row
         self._plot_main_shapes(ax_main, curr_pts, ctrl_pts, step, dist, done)
         
-        # Plot 2: Trajectory of the control point centroid
-        ax_traj = fig.add_subplot(gs[0, 2])  # Right column of top row
-        self._plot_trajectory(ax_traj)
+        # # Plot 2: Trajectory of the control point centroid
+        # ax_traj = fig.add_subplot(gs[0, 1])  # Right column of top row
+        # self._plot_trajectory(ax_traj)
         
         # Plot 3: Circular progress indicator
-        ax_progress = fig.add_subplot(gs[0, 3]) # Top far right
+        ax_progress = fig.add_subplot(gs[0, 2]) # Top far right
         self._plot_progress_indicator(ax_progress, step, done)
         
-        # Plot 4: Reward history
-        ax_reward = fig.add_subplot(gs[1, 0])  # Bottom-left
+        # Plot 4: Reward contribution pie chart
+        ax_pie = fig.add_subplot(gs[0, 3])
+        self._plot_reward_contributions(ax_pie)
+        
+        # Plot 5: Combined reward history
+        ax_reward = fig.add_subplot(gs[1, 0]) #Bottom left
         self._plot_reward_history(ax_reward)
 
-        # Plot 5: Distance-to-target history
+        # Plot 6: Distance-to-target history
         ax_dist = fig.add_subplot(gs[1, 1])  # Bottom-center
         self._plot_distance_history(ax_dist)
         
-        # Plot 6: Knot and weight evolution
-        ax_knots = fig.add_subplot(gs[1:, 2])  # Span two rows
-        self._plot_knot_evolution(ax_knots, kv, step)
+        # Plot 7: Individual reward histories
+        ax_individual = fig.add_subplot(gs[1, 2:])
+        self._plot_individual_rewards(ax_individual)
         
-        # Plot 7: Weight evolution
-        ax_weights = fig.add_subplot(gs[1:, 3])  # Span two rows
-        self._plot_weight_evolution(ax_weights, weights, step)
+        # # Plot 7: Knot evolution
+        # ax_knots = fig.add_subplot(gs[2, :2])
+        # self._plot_knot_evolution(ax_knots, kv, step)
         
-        # Plot 8: Knot and weight history
+        # # Plot 8: Weight evolution  
+        # ax_weights = fig.add_subplot(gs[2, 2:])
+        # self._plot_weight_evolution(ax_weights, weights, step)
+        
+        # Plot 8: Knot history
         ax_knot_hist = fig.add_subplot(gs[2, 0])
         self._plot_knot_history(ax_knot_hist)
         
         # Plot 9: Weight history
         ax_weight_hist = fig.add_subplot(gs[2, 1])
         self._plot_weight_history(ax_weight_hist)
+        
+        # Plot 10: Repulsion energy history
+        ax_repulsion_hist = fig.add_subplot(gs[2, 2:])
+        self._plot_repulsion_history(ax_repulsion_hist)
+        
+        # # Plot 13: Control point distance heatmap
+        # ax_distance_heatmap = fig.add_subplot(gs[4, 1])
+        # self._plot_distance_heatmap(ax_distance_heatmap, ctrl_pts)
+        
+        # # Plot 14: Repulsion force visualization
+        # ax_repulsion_forces = fig.add_subplot(gs[4, 2:])
+        # self._plot_repulsion_forces(ax_repulsion_forces, ctrl_pts)
 
-        
-        
         # Automatically adjust layout so elements don’t overlap
         plt.tight_layout()
         
@@ -142,7 +198,56 @@ class EnhancedSplineVisualizer:
         frame = img[:, :, 1:4]  # ARGB → RGB
         plt.close(fig)
         
-        return frame
+        return frame\
+            
+    def _plot_reward_contributions(self, ax):
+        """Plot current reward contributions as pie chart"""
+        if not hasattr(self.env, 'last_rewards') or len(self.ctrl_reward_history) == 0:
+            ax.text(0.5, 0.5, 'No reward\ndata available', 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_title('Reward Contributions', fontsize=10, weight='bold')
+            return
+        
+        # Get current reward contributions (absolute values for pie chart)
+        current_rewards = self.env.last_rewards
+        ctrl_contrib = abs(current_rewards['ctrl']) * self.env.alpha_ctrl
+        weight_contrib = abs(current_rewards['weight']) * self.env.alpha_weight
+        knot_contrib = abs(current_rewards['knot']) * self.env.alpha_knot
+        repulsion_contrib = abs(current_rewards['repulsion']) * self.env.alpha_repulsion
+        
+        # Only show non-zero contributions
+        labels = []
+        sizes = []
+        colors = []
+        
+        if ctrl_contrib > 1e-6:
+            labels.append(f'Control\n({current_rewards["ctrl"]:.3f})')
+            sizes.append(ctrl_contrib)
+            colors.append(self.colors['ctrl_reward'])
+        
+        if weight_contrib > 1e-6 and self.env.learn_weight:
+            labels.append(f'Weights\n({current_rewards["weight"]:.3f})')
+            sizes.append(weight_contrib)
+            colors.append(self.colors['weight_reward'])
+        
+        if knot_contrib > 1e-6 and self.env.learn_knot:
+            labels.append(f'Knots\n({current_rewards["knot"]:.3f})')
+            sizes.append(knot_contrib)
+            colors.append(self.colors['knot_reward'])
+            
+        if repulsion_contrib > 1e-6:
+            labels.append(f'Repulsion\n({current_rewards["repulsion"]:.3f})')
+            sizes.append(repulsion_contrib)
+            colors.append('purple')
+        
+        if sizes:
+            ax.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', 
+                  startangle=90, textprops={'fontsize': 8})
+        else:
+            ax.text(0.5, 0.5, 'All rewards\nare zero', 
+                   ha='center', va='center', transform=ax.transAxes)
+        
+        ax.set_title('Current Reward Contributions', fontsize=10, weight='bold')
     
     def _plot_main_shapes(self, ax, curr_pts, ctrl_pts, step, dist, done):
         """Plot the current shape, target shape, control points, and deformation vectors."""
@@ -254,6 +359,40 @@ class EnhancedSplineVisualizer:
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.3)
         ax.set_title('Centroid Trajectory', fontsize=10, weight='bold')
+        ax.legend(fontsize=8)
+        
+    def _plot_individual_rewards(self, ax):
+        """Plot individual reward components"""
+        if len(self.ctrl_reward_history) < 1:
+            return
+            
+        steps = range(len(self.ctrl_reward_history))
+        
+        # Plot each reward component
+        ax.plot(steps, self.ctrl_reward_history, 
+               color=self.colors['ctrl_reward'], linewidth=2, 
+               label='Control Points', marker='o', markersize=3)
+        
+        if self.env.learn_weight:
+            ax.plot(steps, self.weight_reward_history, 
+                   color=self.colors['weight_reward'], linewidth=2, 
+                   label='Weights', marker='s', markersize=3)
+        
+        if self.env.learn_knot:
+            ax.plot(steps, self.knot_reward_history, 
+                   color=self.colors['knot_reward'], linewidth=2, 
+                   label='Knots', marker='^', markersize=3)
+            
+            
+        ax.plot(steps, self.repulsion_reward_history, 
+           color='purple', linewidth=2, 
+           label='Repulsion', marker='d', markersize=3)
+        
+        ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
+        ax.grid(True, alpha=0.3)
+        ax.set_title('Individual Reward Components', fontsize=10, weight='bold')
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Reward')
         ax.legend(fontsize=8)
     
     def _plot_reward_history(self, ax):
@@ -424,6 +563,98 @@ class EnhancedSplineVisualizer:
         ax.set_xlabel('Step')
         ax.set_ylabel('Weight Value')
         ax.legend(fontsize=8)
+        
+    def _compute_distance_matrix(self, ctrl_pts):
+        """Compute distance matrix between all control points"""
+        n_pts = len(ctrl_pts)
+        distances = np.zeros((n_pts, n_pts))
+        for i in range(n_pts):
+            for j in range(n_pts):
+                if i != j:
+                    distances[i, j] = np.linalg.norm(ctrl_pts[i] - ctrl_pts[j])
+        return distances
+    
+    def _plot_repulsion_history(self, ax):
+        """Plot repulsion energy and reward over time"""
+        if len(self.repulsion_energy_history) < 1:
+            ax.text(0.5, 0.5, 'No repulsion\ndata available', 
+                ha='center', va='center', transform=ax.transAxes)
+            ax.set_title('Repulsion History', fontsize=10, weight='bold')
+            return
+        
+        steps = range(len(self.repulsion_energy_history))
+        
+        # Plot repulsion energy
+        ax2 = ax.twinx()
+        line1 = ax.plot(steps, self.repulsion_reward_history, 
+                    color='purple', linewidth=2, label='Repulsion Reward')
+        line2 = ax2.plot(steps, self.repulsion_energy_history, 
+                        color='red', linewidth=2, linestyle='--', label='Repulsion Energy')
+        
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Repulsion Reward', color='purple')
+        ax2.set_ylabel('Repulsion Energy', color='red')
+        ax.tick_params(axis='y', labelcolor='purple')
+        ax2.tick_params(axis='y', labelcolor='red')
+        
+        # Combine legends
+        lines = line1 + line2
+        labels = [l.get_label() for l in lines]
+        ax.legend(lines, labels, loc='upper right', fontsize=8)
+        
+        ax.grid(True, alpha=0.3)
+        ax.set_title('Repulsion History', fontsize=10, weight='bold')
+
+    def _plot_distance_heatmap(self, ax, ctrl_pts):
+        """Plot heatmap of distances between control points"""
+        distances = self._compute_distance_matrix(ctrl_pts)
+        
+        im = ax.imshow(distances, cmap='RdYlBu_r', aspect='equal')
+        
+        # Add colorbar
+        plt.colorbar(im, ax=ax, shrink=0.8)
+        
+        # Mark non-adjacent pairs that contribute to repulsion
+        for i, j in self.env.non_adjacent_pairs:
+            # Draw rectangle around non-adjacent pairs
+            rect = patches.Rectangle((j-0.5, i-0.5), 1, 1, 
+                                linewidth=2, edgecolor='black', facecolor='none')
+            ax.add_patch(rect)
+        
+        ax.set_title('Control Point Distances', fontsize=10, weight='bold')
+        ax.set_xlabel('Control Point Index')
+        ax.set_ylabel('Control Point Index')
+
+    def _plot_repulsion_forces(self, ax, ctrl_pts):
+        """Visualize repulsion forces between non-adjacent control points"""
+        # Plot control points
+        ax.scatter(ctrl_pts[:, 0], ctrl_pts[:, 1], 
+                c='blue', s=60, zorder=5, edgecolors='white', linewidth=1.5)
+        
+        # Draw repulsion forces as lines between non-adjacent pairs
+        for i, j in self.env.non_adjacent_pairs:
+            pt_i, pt_j = ctrl_pts[i], ctrl_pts[j]
+            distance = np.linalg.norm(pt_i - pt_j)
+            
+            # Color and thickness based on repulsion strength
+            force_strength = self.env.repulse_k / (distance + self.env.repulse_epsilon)
+            normalized_strength = min(force_strength / 10.0, 1.0)  # Normalize for visualization
+            
+            # Draw line with color indicating force strength
+            ax.plot([pt_i[0], pt_j[0]], [pt_i[1], pt_j[1]], 
+                color='red', alpha=0.3 + 0.7 * normalized_strength,
+                linewidth=0.5 + 2 * normalized_strength)
+            
+            # Add distance text for closest pairs
+            if distance < 0.3:  # Only show for very close points
+                mid_point = (pt_i + pt_j) / 2
+                ax.text(mid_point[0], mid_point[1], f'{distance:.2f}', 
+                    fontsize=8, ha='center', va='center',
+                    bbox=dict(boxstyle='round,pad=0.2', facecolor='yellow', alpha=0.7))
+        
+        ax.set_aspect('equal')
+        ax.set_title('Repulsion Forces\n(Red lines = repulsive pairs)', fontsize=10, weight='bold')
+        ax.grid(True, alpha=0.3)
 
 
 def create_enhanced_visualization():
@@ -440,6 +671,11 @@ def create_enhanced_visualization():
         train_ctrl=True,          # Train control points
         train_weight=True,        # Train weights
         train_knot=True,          # Train knot positions
+        alpha_ctrl=0.2,           # Weight for control point reward
+        alpha_weight=0.2,         # Weight for weight reward  
+        alpha_knot=0.6,           # Weight for knot reward
+        alpha_energy=0.05,        # Weight for repulsion energy
+        alpha_repulsion=0.3,     # Weight for repulsion reward
     )
     
     # Initialize visualizer
@@ -454,16 +690,32 @@ def create_enhanced_visualization():
     initial_frame = viz.create_frame(0, obs, 0.0)
     frames.append(initial_frame)
     
+    print("Starting simulation with separate reward components:")
+    print(f"Control point weight: {env.alpha_ctrl}")
+    print(f"Weight component weight: {env.alpha_weight}")
+    print(f"Knot component weight: {env.alpha_knot}")
+    print(f"Repulsion component weight: {env.alpha_repulsion}")
+    
     # Run the simulation for a fixed number of steps
     for step in range(1, env.max_num_step + 1):
         # Generate a smart action that tries to move the spline closer to the target
         action = generate_smart_action(env, obs)
         
         # Apply the action to the environment and get the next observation, reward, and done flag
-        obs, reward, done, _, _ = env.step(action)
+        obs, reward, done, _, info = env.step(action)
+        
+        # Print reward breakdown every 10 steps
+        if step % 10 == 0 and hasattr(env, 'last_rewards'):
+            crev = env.last_rewards['repulsion']
+            cene = info['repulsion_energy']
+            print(f"Step {step}: Total={env.last_rewards['total']:.3f}, "
+                f"Ctrl={env.last_rewards['ctrl']:.3f}, "
+                f"Weight={env.last_rewards['weight']:.3f}, "
+                f"Knot={env.last_rewards['knot']:.3f}, "
+                f"Step {step}: … RepulsionReward={crev:.3f}, RepulsionEnergy={cene:.3f}")
+        
         # Create a new frame showing the updated spline and performance
         frame = viz.create_frame(step, obs, reward, done)
-        # Add the frame to the animation
         frames.append(frame)
         
         if done:
@@ -473,8 +725,8 @@ def create_enhanced_visualization():
             break
     
     # Save as GIF
-    imageio.mimsave("letters_spline_deformation_knots.gif", frames, fps=69, loop=0)
-    print("Created letters_spline_deformation_knots.gif")
+    imageio.mimsave("letters_spline_deformation_separate_rewards.gif", frames, fps=69, loop=0)
+    print("Created letters_spline_deformation_separate_rewards.gif")
     
     return frames
 

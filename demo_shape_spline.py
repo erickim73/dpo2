@@ -33,9 +33,9 @@ class EnhancedSplineVisualizer:
             'knots': '#FF8C00',       # Dark orange
             'weights': '#DC143C',     # Crimson
             'ctrl_reward': '#FF4500', # Orange red
-            'weight_reward': '#32CD32', # Lime green
-            'knot_reward': '#8A2BE2',  # Blue violet
-            'repulsion': '#8B008B'     # ADD THIS: Dark magenta for repulsion
+            'weight_reward': '#32CD32', # Lime green 
+            'knot_reward': '#4169E1',  # Blue violet
+            'repulsion': '#8A2BE2'     # ADD THIS: Dark magenta for repulsion
         }
         
         # Store trajectory data
@@ -106,7 +106,12 @@ class EnhancedSplineVisualizer:
             self.repulsion_reward_history.append(self.env.last_rewards['repulsion'])
             self.reward_history.append(self.env.last_rewards['total'])
             
-            repulsion_energy = self.env._compute_repulsive_energy(ctrl_pts)
+            # raw pairwise energy (repulsion & attraction)
+            repulsion_energy = self.env._compute_pairwise_energy(
+                ctrl_pts,
+                self.env.repulse_k,
+                self.env.repulse_k_att
+            )
             self.repulsion_energy_history.append(repulsion_energy)
             
             distances = self._compute_distance_matrix(ctrl_pts)
@@ -238,7 +243,7 @@ class EnhancedSplineVisualizer:
         if repulsion_contrib > 1e-6:
             labels.append(f'Repulsion\n({current_rewards["repulsion"]:.3f})')
             sizes.append(repulsion_contrib)
-            colors.append('purple')
+            colors.append(self.colors['repulsion'])
         
         if sizes:
             ax.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', 
@@ -384,8 +389,8 @@ class EnhancedSplineVisualizer:
                    label='Knots', marker='^', markersize=3)
             
             
-        ax.plot(steps, self.repulsion_reward_history, 
-           color='purple', linewidth=2, 
+        ax.plot(steps, self.repulsion_reward_history,
+               color=self.colors['repulsion'], linewidth=2,
            label='Repulsion', marker='d', markersize=3)
         
         ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
@@ -586,8 +591,8 @@ class EnhancedSplineVisualizer:
         
         # Plot repulsion energy
         ax2 = ax.twinx()
-        line1 = ax.plot(steps, self.repulsion_reward_history, 
-                    color='purple', linewidth=2, label='Repulsion Reward')
+        line1 = ax.plot(steps, self.repulsion_reward_history,
+                    color=self.colors['repulsion'], linewidth=2, label='Repulsion Reward')
         line2 = ax2.plot(steps, self.repulsion_energy_history, 
                         color='red', linewidth=2, linestyle='--', label='Repulsion Energy')
         
@@ -671,11 +676,12 @@ def create_enhanced_visualization():
         train_ctrl=True,          # Train control points
         train_weight=True,        # Train weights
         train_knot=True,          # Train knot positions
-        alpha_ctrl=0.2,           # Weight for control point reward
-        alpha_weight=0.2,         # Weight for weight reward  
-        alpha_knot=0.6,           # Weight for knot reward
-        alpha_energy=0.05,        # Weight for repulsion energy
-        alpha_repulsion=0.3,     # Weight for repulsion reward
+        alpha_ctrl=0.4,       # give geometry a strong pull
+        alpha_knot=0.2,       # moderate knot alignment
+        alpha_weight=0.2,     # moderate weight alignment
+        alpha_repulsion=0.2,  # match repulsion scale to geometry
+        alpha_vel=0.1,
+        alpha_energy=0.05,
     )
     
     # Initialize visualizer
@@ -712,7 +718,8 @@ def create_enhanced_visualization():
                 f"Ctrl={env.last_rewards['ctrl']:.3f}, "
                 f"Weight={env.last_rewards['weight']:.3f}, "
                 f"Knot={env.last_rewards['knot']:.3f}, "
-                f"Step {step}: … RepulsionReward={crev:.3f}, RepulsionEnergy={cene:.3f}")
+                f"RepulsionReward={crev:.3f}, "
+                f"RepulsionEnergy={cene:.3f}")
         
         # Create a new frame showing the updated spline and performance
         frame = viz.create_frame(step, obs, reward, done)

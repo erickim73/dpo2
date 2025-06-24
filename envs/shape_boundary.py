@@ -41,6 +41,8 @@ class ShapeBoundary(BBO):
                  repulse_k: float=7.0, # spring constant k
                  repulse_epsilon: float=1e-3, # small term to avoid division by zero
                  lambda_decay: float = 3.0,  # decay rate for control→(weight+knot) transition
+                 repulse_r_max: float = 1.5, # above this distance apply attraction
+                 repulse_k_att: float = 1.0, # spring constant for attraction
                 ):
         # Initialize the base BBO environment
         #  - naive: if True, use simple reward = -val. else use pmp-shaped reward
@@ -74,21 +76,38 @@ class ShapeBoundary(BBO):
         self.learn_weight = train_weight
         self.learn_knot   = train_knot
         
-        # how much each sub-reward contributes
-        self.alpha_ctrl   = alpha_ctrl
-        self.alpha_weight = alpha_weight
-        self.alpha_knot  = alpha_knot
-        
-        self.alpha_vel   = alpha_vel
-        self.alpha_energy = alpha_energy
-        
-        # Repulsive Energy Constraints
-        self.alpha_repulsion = alpha_repulsion
+        # ——— Reward-term weights ———
+        self.alpha_ctrl       = alpha_ctrl       # rq1: geometry (distance → target)
+        self.alpha_knot       = alpha_knot       # rq2: knot-vector alignment
+        self.alpha_weight     = alpha_weight     # rq3: weight-vector alignment
+        self.alpha_repulsion  = alpha_repulsion  # rq4: pairwise repulsion energy
+
+        self.alpha_vel        = alpha_vel        # velocity penalty
+        self.alpha_energy     = alpha_energy     # action-energy penalty
+
         self.repulse_k = repulse_k
         self.repulse_epsilon = repulse_epsilon
         
-        self.sigma = 0.4        # desired “rest” distance
+        self.sigma = 0.8 # desired “rest” distance
         self.lambda_decay = lambda_decay  # decay factor for repulsion energy
+        
+        self.repulse_r_max = repulse_r_max  # max distance for attraction
+        self.repulse_k_att = repulse_k_att  # spring constant for attraction
+        
+        # Edge‐based constraint monitoring
+        # no edge may collapse below this length
+        self.min_edge_length = 0.05
+        # no edge may stretch beyond this length
+        self.max_edge_length = 2.0
+
+        # how strongly to penalize collapsed edges (< min)
+        self.lambda_edge_short = 10.0  
+        # how strongly to penalize over-stretched edges (> max)
+        self.lambda_edge_long  = 5.0   
+
+        # weight of the combined edge‐constraint penalty in your reward
+        self.alpha_edge = 0.2
+
         
         # Initialize reward tracking
         self.last_rewards = {
@@ -194,10 +213,14 @@ class ShapeBoundary(BBO):
         n_pts = init_ctrl_pts.shape[0]
         # All i<j pairs that are not in the edges
         self.non_adjacent_pairs = [
-         (i,j)
-         for i in range(n_pts) for j in range(i+1, n_pts)
-         if (i,j) not in edges
-     ]
+            (i,j)
+            for i in range(n_pts) for j in range(i+1, n_pts)
+            if (i,j) not in edges
+        ]
+        # include the *adjacent* Delaunay edges too
+        self.edge_pairs = list(edges)
+        # final list of all springs
+        self.pair_list   = self.edge_pairs + self.non_adjacent_pairs
 
         # Rendering
         self.render_mode = render_mode
@@ -265,26 +288,23 @@ class ShapeBoundary(BBO):
         # penalize squared‐magnitude of the action vector (approx. work/energy)
         return -float(np.sum(action**2))
     
-    def _compute_repulsive_energy(self, ctrl_pts: np.ndarray) -> float:
+    def _compute_pairwise_energy(self, ctrl_pts: np.ndarray, k_rep: float, k_att: float) -> float:
         """
-        Purely-repulsive “spring”: only when two non-adjacent points
-        get closer than self.sigma, with energy = ½·k·(σ - d)².
+        For each pair:
+         - if d < sigma: ½·k_rep·(σ - d)²  (repulsion)
+         - elif d > repulse_r_max:  ½·k_att·(d - σ)²  (weak attraction)
+         - else: 0
         """
         energy = 0.0
-        for i, j in self.non_adjacent_pairs:
-            d = np.linalg.norm(ctrl_pts[i] - ctrl_pts[j])
+        for i, j in self.pair_list:
+            d = np.linalg.norm(ctrl_pts[i] - ctrl_pts[j]) + self.repulse_epsilon
             if d < self.sigma:
                 δ = self.sigma - d
-                energy += 0.5 * self.repulse_k * (δ * δ)
+                energy += 0.5 * k_rep * (δ * δ)
+            elif d > self.repulse_r_max:
+                Δ = d - self.sigma
+                energy += 0.5 * k_att * (Δ * Δ)
         return energy
-
-
-
-    
-    # splitting the reward into 3 different terms, alpha1 * reward1 + alpha2 * reward2 + alpha3 * reward3 == 1
-    # has to be as a function as time. when you get closer to end, you do course motion, increase the weight for the knots. Initially, weights for the knots are pretty small because it shouldn't be wobbling.
-    # after plotting, you can check them. Nice to see them in a hack. 
-
 
     def step(self, action):
         # --- unpack old ctrl_pts for velocity term ---
@@ -304,12 +324,59 @@ class ShapeBoundary(BBO):
 
         # 2) Unpack into control points, weights, and knot vector
         ctrl_pts, weights, kv = self._unpack_state()
+        
+        n_pts = ctrl_pts.shape[0]
+        delaunay = Delaunay(ctrl_pts)
+        # build edge set from triangles
+        edges = {
+            tuple(sorted(edge))
+            for tri in delaunay.simplices
+            for edge in [(tri[0],tri[1]), (tri[1],tri[2]), (tri[0],tri[2])]
+        }
+        # all i<j pairs not in edges
+        non_adjacent = [
+            (i,j)
+            for i in range(n_pts) for j in range(i+1, n_pts)
+            if (i,j) not in edges
+        ]
+        # combine both adjacent+non-adjacent springs
+        self.pair_list = list(edges) + non_adjacent
+        
+        # ——— Edge lengths from Delaunay adjacency ———
+        # 'edges' is your set of adjacent-control-point pairs
+        edge_lengths = [
+            np.linalg.norm(ctrl_pts[i] - ctrl_pts[j])
+            for (i, j) in edges
+        ]
 
-        # — compute repulsion energy penalty (start soft, finish strong) —
+        # penalty for collapsed edges
+        short_penalty = sum(
+            max(0.0, self.min_edge_length - L)**2
+            for L in edge_lengths
+        )
+        # penalty for over-stretched edges
+        long_penalty = sum(
+            max(0.0, L - self.max_edge_length)**2
+            for L in edge_lengths
+        )
+
+        # combined Lagrangian penalty
+        edge_penalty = 0.5 * self.lambda_edge_short * short_penalty \
+                    + 0.5 * self.lambda_edge_long  * long_penalty
+
+        # turn penalty into a reward term (negative cost)
+        reward_edge = - self.alpha_edge * edge_penalty
+
+        #  dynamic repulsion/attraction strength
         t_norm = self.num_step / float(self.max_num_step)
-        alpha_rep = self.alpha_repulsion * (0.1 + 0.9 * t_norm)
-        rep_energy = self._compute_repulsive_energy(ctrl_pts) if self.learn_ctrl else 0.0
-        reward_rep = -alpha_rep * rep_energy
+        # e.g. ramp up repulsion over time
+        k_dyn = self.repulse_k * (0.5 + 0.5 * t_norm)  
+        k_att_dyn = self.repulse_k_att * (1.0 - t_norm)   # optional: attraction fades out
+        rep_energy = self._compute_pairwise_energy(ctrl_pts, k_dyn, k_att_dyn) \
+                     if self.learn_ctrl else 0.0
+        # --- rq4: convert raw repulsion‐energy into a reward term
+        reward_rep = - self.alpha_repulsion * rep_energy
+
 
         # 3) Build NURBS with all three sets of learnable parameters
         spline = sp.NURBS(
@@ -353,24 +420,25 @@ class ShapeBoundary(BBO):
 
         # 6g) Combine everything
         total_reward = (
-            alpha_ctrl_dyn    * reward_ctrl
-            + alpha_weight_dyn * reward_weight
-            + alpha_knot_dyn   * reward_knot
-            + self.alpha_vel   * reward_vel
-            + self.alpha_energy * reward_energy
-            + reward_rep
+            alpha_ctrl_dyn     * reward_ctrl    # rq1
+            + alpha_weight_dyn   * reward_weight  # rq3
+            + alpha_knot_dyn     * reward_knot    # rq2
+            + self.alpha_vel     * reward_vel
+            + self.alpha_energy  * reward_energy
+            + reward_rep                            # rq4
         )
 
         # 7) Save for analysis/plotting
         self.last_rewards = {
             'ctrl':      reward_ctrl,
-            'weight':    reward_weight,
             'knot':      reward_knot,
+            'weight':    reward_weight,
+            'repulsion': reward_rep,
             'vel':       reward_vel,
             'energy':    reward_energy,
-            'repulsion': reward_rep,
             'total':     total_reward
         }
+
 
         # 8) Termination check
         done = (polygon.area == 0) or (self.num_step >= self.max_num_step)

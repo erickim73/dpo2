@@ -10,6 +10,7 @@ Farama-Notifications==0.0.4
 filelock==3.18.0
 fonttools==4.58.2
 fsspec==2025.5.1
+gustaf==0.1.0
 gym==0.26.2
 gym-notices==0.0.8
 gymnasium==1.1.1
@@ -68,6 +69,7 @@ scipy==1.15.3
 setuptools==80.9.0
 shapely==2.1.1
 six==1.17.0
+splinepy==0.2.0
 stable_baselines3==2.6.0
 stack-data==0.6.3
 sympy==1.14.0

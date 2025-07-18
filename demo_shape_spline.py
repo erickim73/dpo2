@@ -7,9 +7,13 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.collections import LineCollection
 import splinepy as sp
-from matplotlib.animation import FuncAnimation
-
+from matplotlib.tri import Triangulation
+from scipy.spatial import Delaunay
 from envs.shape_boundary import ShapeBoundary
+import torch
+from policy import Policy
+from common_nets import Mlp
+from utils import get_train_params, get_architectures
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message=".*tight_layout.*")
@@ -31,9 +35,7 @@ class EnhancedSplineVisualizer:
             'background': '#F8F8FF',  # Ghost white
             'text': '#2F4F4F',        # Dark slate gray
             'knots': '#FF8C00',       # Dark orange
-            'weights': '#DC143C',     # Crimson
             'ctrl_reward': '#FF4500', # Orange red
-            'weight_reward': '#32CD32', # Lime green 
             'knot_reward': '#4169E1',  # Blue violet
             'repulsion': '#8A2BE2'     # ADD THIS: Dark magenta for repulsion
         }
@@ -44,13 +46,11 @@ class EnhancedSplineVisualizer:
         # Store separate reward histories
         self.reward_history = []
         self.ctrl_reward_history = []
-        self.weight_reward_history = []
         self.knot_reward_history = []
         self.distance_history = []
         
-        # Store knot and weight histories
+        # Store knot histories
         self.knot_history = []
-        self.weight_history = []
         
         # Store repulsion history
         self.repulsion_reward_history = []
@@ -59,7 +59,6 @@ class EnhancedSplineVisualizer:
         
         # Store initial values for comparison
         self.initial_knots = None
-        self.initial_weights = None
         
     def create_frame(self, step, obs, reward, done=False):
         """Create a single visualization frame showing the current state of the spline deformation."""
@@ -70,27 +69,30 @@ class EnhancedSplineVisualizer:
         ctrl_pts = ctrl_flat.reshape(self.env.num_coef, 2)
         
         # Unpack the knot vector from the environment state (used to define the NURBS spline)
-        _, weights, kv = self.env._unpack_state()
+        _, kv = self.env._unpack_state()
         
         # Store initial values on first frame
         if self.initial_knots is None:
             self.initial_knots = np.array(kv)
-            self.initial_weights = weights.copy()
         
         # Store current values for history
         self.knot_history.append(np.array(kv))
-        self.weight_history.append(weights.copy())
         
-        # Rebuild the current NURBS spline using the control points and knot vector
-        current_spline = sp.NURBS(
+        # Rebuild the current BSpline spline using the control points and knot vector
+        current_spline = sp.BSpline(
             degrees=[self.env.degree],
             knot_vectors=[kv],
             control_points=ctrl_pts,
-            weights=weights
         )
         
         # Evaluate the spline at sampled time steps to get its current 2D shape
         curr_pts = current_spline.evaluate(self.env.ts.reshape(-1, 1))
+
+        # combine control points + artificial “scaffolding” points
+        all_verts = ctrl_pts.copy()
+        delaunay = Delaunay(all_verts)
+        triangles = delaunay.simplices
+
         
         # Compute and save the centroid (average position) of the current control points
         centroid = np.mean(ctrl_pts, axis=0)
@@ -99,19 +101,14 @@ class EnhancedSplineVisualizer:
         # Store reward histories (get individual rewards from environment)
         if hasattr(self.env, 'last_rewards'):
             self.ctrl_reward_history.append(self.env.last_rewards['ctrl'])
-            self.weight_reward_history.append(self.env.last_rewards['weight'])
             self.knot_reward_history.append(self.env.last_rewards['knot'])
             self.reward_history.append(self.env.last_rewards['total'])
             
             self.repulsion_reward_history.append(self.env.last_rewards['repulsion'])
             self.reward_history.append(self.env.last_rewards['total'])
             
-            # raw pairwise energy (repulsion & attraction)
-            repulsion_energy = self.env._compute_pairwise_energy(
-                ctrl_pts,
-                self.env.repulse_k,
-                self.env.repulse_k_att
-            )
+            # raw enhanced‐repulsion energy
+            repulsion_energy = self.env._compute_enhanced_repulsion_energy(ctrl_pts)
             self.repulsion_energy_history.append(repulsion_energy)
             
             distances = self._compute_distance_matrix(ctrl_pts)
@@ -120,7 +117,6 @@ class EnhancedSplineVisualizer:
             # Fallback if environment doesn't have separate rewards
             self.reward_history.append(reward)
             self.ctrl_reward_history.append(reward)
-            self.weight_reward_history.append(0.0)
             self.knot_reward_history.append(0.0)
             self.repulsion_reward_history.append(0.0)
             self.repulsion_energy_history.append(0.0)
@@ -138,7 +134,7 @@ class EnhancedSplineVisualizer:
         
         # Plot 1: Main shape comparison (target vs. current spline)
         ax_main = fig.add_subplot(gs[0, :2]) # Span first two columns of top row
-        self._plot_main_shapes(ax_main, curr_pts, ctrl_pts, step, dist, done)
+        self._plot_main_shapes(ax_main, curr_pts, ctrl_pts, all_verts, triangles, step, dist, done)
         
         # # Plot 2: Trajectory of the control point centroid
         # ax_traj = fig.add_subplot(gs[0, 1])  # Right column of top row
@@ -168,17 +164,9 @@ class EnhancedSplineVisualizer:
         # ax_knots = fig.add_subplot(gs[2, :2])
         # self._plot_knot_evolution(ax_knots, kv, step)
         
-        # # Plot 8: Weight evolution  
-        # ax_weights = fig.add_subplot(gs[2, 2:])
-        # self._plot_weight_evolution(ax_weights, weights, step)
-        
         # Plot 8: Knot history
         ax_knot_hist = fig.add_subplot(gs[2, 0])
         self._plot_knot_history(ax_knot_hist)
-        
-        # Plot 9: Weight history
-        ax_weight_hist = fig.add_subplot(gs[2, 1])
-        self._plot_weight_history(ax_weight_hist)
         
         # Plot 10: Repulsion energy history
         ax_repulsion_hist = fig.add_subplot(gs[2, 2:])
@@ -216,7 +204,6 @@ class EnhancedSplineVisualizer:
         # Get current reward contributions (absolute values for pie chart)
         current_rewards = self.env.last_rewards
         ctrl_contrib = abs(current_rewards['ctrl']) * self.env.alpha_ctrl
-        weight_contrib = abs(current_rewards['weight']) * self.env.alpha_weight
         knot_contrib = abs(current_rewards['knot']) * self.env.alpha_knot
         repulsion_contrib = abs(current_rewards['repulsion']) * self.env.alpha_repulsion
         
@@ -229,11 +216,6 @@ class EnhancedSplineVisualizer:
             labels.append(f'Control\n({current_rewards["ctrl"]:.3f})')
             sizes.append(ctrl_contrib)
             colors.append(self.colors['ctrl_reward'])
-        
-        if weight_contrib > 1e-6 and self.env.learn_weight:
-            labels.append(f'Weights\n({current_rewards["weight"]:.3f})')
-            sizes.append(weight_contrib)
-            colors.append(self.colors['weight_reward'])
         
         if knot_contrib > 1e-6 and self.env.learn_knot:
             labels.append(f'Knots\n({current_rewards["knot"]:.3f})')
@@ -254,7 +236,7 @@ class EnhancedSplineVisualizer:
         
         ax.set_title('Current Reward Contributions', fontsize=10, weight='bold')
     
-    def _plot_main_shapes(self, ax, curr_pts, ctrl_pts, step, dist, done):
+    def _plot_main_shapes(self, ax, curr_pts, ctrl_pts, all_verts, triangles, step, dist, done):
         """Plot the current shape, target shape, control points, and deformation vectors."""
     
         # Draw the target shape as a filled polygon
@@ -282,6 +264,11 @@ class EnhancedSplineVisualizer:
         # Add both shapes to the plot
         ax.add_patch(target_poly)
         ax.add_patch(current_poly)
+        
+        # overlay the triangulation mesh
+        tri = Triangulation(all_verts[:,0], all_verts[:,1], triangles)
+        ax.triplot(tri, color='gray', linewidth=0.5, alpha=0.6)
+        
         
         # Draw the control points of the current spline
         ax.scatter(
@@ -321,6 +308,10 @@ class EnhancedSplineVisualizer:
                             fc=self.colors['trajectory'], ec=self.colors['trajectory'],  # Fill and edge color
                             alpha=0.7                                            # Slight transparency
                         )
+        # draw triangulation on top of the white background
+        tri = Triangulation(all_verts[:,0], all_verts[:,1], triangles)
+        ax.triplot(tri, color='gray', linewidth=0.5, alpha=0.6)
+
         
         # Store current control points for use in next frame's movement arrows
         self.prev_ctrl_pts = ctrl_pts.copy()
@@ -377,11 +368,6 @@ class EnhancedSplineVisualizer:
         ax.plot(steps, self.ctrl_reward_history, 
                color=self.colors['ctrl_reward'], linewidth=2, 
                label='Control Points', marker='o', markersize=3)
-        
-        if self.env.learn_weight:
-            ax.plot(steps, self.weight_reward_history, 
-                   color=self.colors['weight_reward'], linewidth=2, 
-                   label='Weights', marker='s', markersize=3)
         
         if self.env.learn_knot:
             ax.plot(steps, self.knot_reward_history, 
@@ -491,43 +477,6 @@ class EnhancedSplineVisualizer:
         ax.grid(True, alpha=0.3)
         ax.set_xlim(0, 1)
 
-
-    def _plot_weight_evolution(self, ax, current_weights, step):
-        """Show current weights vs initial/target"""
-        if self.initial_weights is None:
-            return
-            
-        target_weights = np.array(self.env.target_spline.weights).flatten()  # Ensure 1D array
-        current_weights = np.array(current_weights).flatten()  # Ensure 1D array
-        initial_weights = np.array(self.initial_weights).flatten()  # Ensure 1D array
-        
-        # Make sure all arrays have the same length
-        min_len = min(len(target_weights), len(current_weights), len(initial_weights))
-        target_weights = target_weights[:min_len]
-        current_weights = current_weights[:min_len]
-        initial_weights = initial_weights[:min_len]
-        
-        # Plot weight values as horizontal bars
-        y_pos = np.arange(len(current_weights))
-        
-        # Initial weights (light gray)
-        ax.barh(y_pos - 0.2, initial_weights, height=0.3, 
-                color='lightgray', alpha=0.7, label='Initial')
-        
-        # Target weights (green)
-        ax.barh(y_pos, target_weights, height=0.3, 
-                color=self.colors['target'], alpha=0.7, label='Target')
-        
-        # Current weights (red)
-        ax.barh(y_pos + 0.2, current_weights, height=0.3, 
-                color=self.colors['weights'], alpha=0.8, label='Current')
-        
-        ax.set_yticks(y_pos[::2])  # Show every other label to avoid clutter
-        ax.set_yticklabels([f'W{i+1}' for i in range(0, len(current_weights), 2)])
-        ax.set_xlabel('Weight Value')
-        ax.set_title('Control Point Weights', fontsize=10, weight='bold')
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
     
     def _plot_knot_history(self, ax):
         """Plot how knots change over time"""
@@ -550,25 +499,6 @@ class EnhancedSplineVisualizer:
         if len(self.knot_history[0]) - 2*(degree+1) <= 3:
             ax.legend(fontsize=8)
     
-    def _plot_weight_history(self, ax):
-        """Plot how weights change over time"""
-        if len(self.weight_history) < 2:
-            return
-            
-        steps = range(len(self.weight_history))
-        weight_array = np.array(self.weight_history)
-        
-        # Plot evolution of first few weights (to avoid clutter)
-        for i in range(min(5, weight_array.shape[1])):
-            ax.plot(steps, weight_array[:, i], marker='o', markersize=2, 
-                   label=f'Weight {i+1}', alpha=0.7)
-        
-        ax.grid(True, alpha=0.3)
-        ax.set_title('Weight Evolution', fontsize=10, weight='bold')
-        ax.set_xlabel('Step')
-        ax.set_ylabel('Weight Value')
-        ax.legend(fontsize=8)
-        
     def _compute_distance_matrix(self, ctrl_pts):
         """Compute distance matrix between all control points"""
         n_pts = len(ctrl_pts)
@@ -664,25 +594,76 @@ class EnhancedSplineVisualizer:
 
 def create_enhanced_visualization():
     """Create the enhanced spline deformation visualization"""
-    # Create the shape deformation environment with specific settings
+    # make sure device exists before loading the checkpoint
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Create the shape deformation environment with enhanced constraint settings
     env = ShapeBoundary(
         naive=False,              # Use shaped reward, not just raw negative value
-        step_size=5e-2,           # How much an action perturbs the spline
-        ctrl_state_dim=36,        # 18 control points × 2D = 36-dimensional state
-        max_num_step=150,         # Total number of steps to run the simulation
+        step_size=3e-2,           # Smaller steps for better stability
+        ctrl_state_dim=16,        # 18 control points × 2D = 36-dimensional state
+        max_num_step=200,         # More steps for convergence
         render_mode="rgb_array",  # Output images (used for making frames)
         degree=3,                 # Use cubic splines (degree 3)
-        n_internal_knots=14,      # Number of internal knots controls spline flexibility
+        n_internal_knots=0,      # Number of internal knots controls spline flexibility
         train_ctrl=True,          # Train control points
-        train_weight=True,        # Train weights
-        train_knot=True,          # Train knot positions
-        alpha_ctrl=0.4,       # give geometry a strong pull
-        alpha_knot=0.2,       # moderate knot alignment
-        alpha_weight=0.2,     # moderate weight alignment
-        alpha_repulsion=0.2,  # match repulsion scale to geometry
-        alpha_vel=0.1,
-        alpha_energy=0.05,
+        train_knot=False,          # Train knot positions
+        
+        # ADJUSTED REWARD WEIGHTS
+        alpha_ctrl=0.6,           # Stronger pull toward target geometry
+        alpha_knot=0.15,          # Less emphasis on knot alignment
+        alpha_repulsion=0.1,      # Will be handled by enhanced constraints
+        alpha_vel=0.08,           # Less velocity penalty
+        alpha_energy=0.03,        # Less action penalty
+        
+        # ENHANCED CONSTRAINT PARAMETERS
+        repulse_k=8.0,            # Stronger base repulsion
+        repulse_epsilon=1e-4,     # Better numerical stability
+        repulse_r_max=1.8,        # Larger attraction zone
+        repulse_k_att=1.2,        # Stronger attraction
+        lambda_decay=2.5,         # Moderate transition timing
+        
+        # BARRIER AND CONSTRAINT PARAMETERS
+        # These are new parameters you may need to add to your __init__ method:
+        min_edge_length=0.03,     # Minimum allowed edge length
+        max_edge_length=2.5,      # Maximum allowed edge length
+        lambda_edge_short=15.0,   # Penalty for collapsed edges
+        lambda_edge_long=8.0,     # Penalty for over-stretched edges
+        alpha_edge=0.15,          # Weight for edge constraint penalty
+        
+        # Intersection penalties
+        alpha_intersect=0.8,      # Weight for intersection penalty
+        lambda_intersect=150.0,   # Barrier strength for intersections
+        
+        # Barrier parameters
+        d_min=0.04,               # Minimum distance for log barrier
+        alpha_barrier=0.6,        # Weight for barrier penalty
     )
+    
+    # DPO policy setup
+    ckpt = torch.load("models/shape_boundary_DPO_first_order.pth", map_location=device)
+    
+    # build the network with exactly the same layers that the checkpoint expects
+    in_dim, out_dim = env.state_dim, env.state_dim      # both should be 16 here
+    layer_dims     = get_architectures("shape_boundary",
+                                      zero_order=False)  # e.g. [32, 64, 32]
+    rate, _, step_size, _, _, _ = get_train_params("shape_boundary")
+
+    main_net = Mlp(
+        input_dim=in_dim,
+        output_dim=out_dim,
+        layer_dims=layer_dims
+    ).to(device)
+
+    policy = Policy(
+        zero_order=False,
+        main_net=main_net,
+        rate=rate,
+        step_size=step_size
+    )
+    policy.main_net.load_state_dict(ckpt)
+    policy.main_net.eval()
+    prev_action = np.zeros(env.state_dim, dtype=np.float32)
     
     # Initialize visualizer
     viz = EnhancedSplineVisualizer(env)
@@ -698,14 +679,14 @@ def create_enhanced_visualization():
     
     print("Starting simulation with separate reward components:")
     print(f"Control point weight: {env.alpha_ctrl}")
-    print(f"Weight component weight: {env.alpha_weight}")
     print(f"Knot component weight: {env.alpha_knot}")
     print(f"Repulsion component weight: {env.alpha_repulsion}")
     
     # Run the simulation for a fixed number of steps
     for step in range(1, env.max_num_step + 1):
-        # Generate a smart action that tries to move the spline closer to the target
-        action = generate_smart_action(env, obs)
+        # ─ use trained DPO policy to pick the action ─
+        action = policy.get_action(obs, prev_action)
+        prev_action = action.copy()
         
         # Apply the action to the environment and get the next observation, reward, and done flag
         obs, reward, done, _, info = env.step(action)
@@ -716,7 +697,6 @@ def create_enhanced_visualization():
             cene = info['repulsion_energy']
             print(f"Step {step}: Total={env.last_rewards['total']:.3f}, "
                 f"Ctrl={env.last_rewards['ctrl']:.3f}, "
-                f"Weight={env.last_rewards['weight']:.3f}, "
                 f"Knot={env.last_rewards['knot']:.3f}, "
                 f"RepulsionReward={crev:.3f}, "
                 f"RepulsionEnergy={cene:.3f}")
@@ -732,52 +712,10 @@ def create_enhanced_visualization():
             break
     
     # Save as GIF
-    imageio.mimsave("letters_spline_deformation_separate_rewards.gif", frames, fps=69, loop=0)
-    print("Created letters_spline_deformation_separate_rewards.gif")
+    imageio.mimsave("letters_spline_deformation.gif", frames, fps=69, loop=0)
+    print("Created letters_spline_deformation.gif")
     
     return frames
-
-def generate_smart_action(env, obs):
-    # 1) Control-point update (move toward target control points)
-    ctrl_flat = obs[:env.ctrl_dim]
-    ctrl_pts = ctrl_flat.reshape(env.num_coef, 2)
-    E_ctrl = np.array(env.target_spline.control_points)
-    diff = E_ctrl - ctrl_pts
-    action_ctrl = diff.flatten() * 0.5
-    action_ctrl += np.random.normal(0, 0.1, size=action_ctrl.shape)
-
-    # 2) Weight update (move toward target weights)
-    #    obs[env.ctrl_dim : env.ctrl_dim+env.weight_dim] holds current weights
-    target_w   = np.array(env.target_spline.weights)
-    current_w  = obs[env.ctrl_dim : env.ctrl_dim + env.weight_dim]
-    w_diff     = target_w - current_w
-    action_weight = w_diff * 0.2
-    action_weight += np.random.normal(0, 0.05, size=env.weight_dim)
-    action_weight = action_weight.flatten()  
-
-    # 3) Knot update (small random perturbations)
-    if env.knot_dim > 0:
-        action_knot = np.random.normal(0, 0.05, size=env.knot_dim)
-    else:
-        action_knot = np.array([])
-
-    # 4) Concatenate into one full action vector
-    action = np.concatenate([action_ctrl, action_weight, action_knot])
-    
-    # ensure it is exactly the same length as your state_dim
-    expected = env.state_dim
-    got = action.shape[0]
-    if got != expected:
-        if got < expected:
-            # pad with zeros
-            padding = np.zeros(expected - got, dtype=action.dtype)
-            action = np.concatenate([action, padding])
-        else:
-            # truncate the extras
-            action = action[:expected]
-
-    # 5) Clip so we don’t violate env.action_space
-    return np.clip(action, env.action_space.low, env.action_space.high)
 
 if __name__ == "__main__":
     create_enhanced_visualization()

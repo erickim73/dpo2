@@ -1,19 +1,16 @@
-import math
 from typing import Optional
 import numpy as np
 from shapely.geometry import Polygon
 from gymnasium import spaces
 import pygame
 from pygame import gfxdraw
-# BBO: A base environment implementing basic discounting and reward calculation
 from envs.bbo import BBO
 import splinepy as sp
 from scipy.spatial import Delaunay
-from envs.spline_utils import segments_intersect, _segment_distance, ccw
+import math
 
 # A large numeric constant used to penalize degenerate shapes
 MAX_ACT = 1e4
-
 
 class ShapeBoundary(BBO):
     metadata = {
@@ -24,39 +21,29 @@ class ShapeBoundary(BBO):
     }
 
     def __init__(self, naive=False, 
-             step_size=1e-2, 
-             ctrl_state_dim=18, 
-             max_num_step=20, 
-             render_mode='human', 
-             degree=2, 
-             n_internal_knots=14, 
-             train_ctrl=True, 
-             train_knot=True, 
-             alpha_ctrl: float=0.2,
-             alpha_knot: float=0.6,
-             alpha_vel: float=0.3,
-             alpha_energy: float=0.05,
-             alpha_repulsion: float=0.1,
-             repulse_k: float=7.0,
-             repulse_epsilon: float=1e-3,
-             lambda_decay: float = 3.0,
-             repulse_r_max: float = 1.5,
-             repulse_k_att: float = 1.0,
-             # ——— spring energy ———
-             alpha_spring: float = 0.1,
-             k_spring: float = 1.0,
-             # ——— edge‐length constraints ———
-             min_edge_length: float = 0.05,
-             max_edge_length: float = 2.0,
-             lambda_edge_short: float = 10.0,
-             lambda_edge_long: float = 5.0,
-             alpha_edge: float = 0.2,
-             # ——— intersection/barrier penalties ———
-             alpha_intersect: float = 1.0,
-             lambda_intersect: float = 100.0,
-             d_min: float = 0.05,
-             alpha_barrier: float = 0.5
-            ):
+                 step_size=1e-2, 
+                 ctrl_state_dim=16, 
+                 max_num_step=20, 
+                 render_mode='human', 
+                 degree=2, 
+                 n_internal_knots=0, 
+                 train_ctrl=True, 
+                 train_weight=False, 
+                 train_knot=False, 
+                 alpha_ctrl: float=0.2,
+                 alpha_weight: float=0.2,
+                 alpha_knot: float=0.6,
+                 alpha_repulsion: float=0.05, # weight for repulsive spring penalty
+                 repulse_k: float=0.5, # spring constant k
+                 repulse_epsilon: float=1e-3, # small term to avoid division by zero
+                 repulse_r_max: float = 1.5, # above this distance apply attraction
+                 repulse_k_att: float = 1.0, # spring constant for attraction
+                 alpha_tri_quality: float = 0.1,    # Weight for triangle quality regularizer
+                 min_tri_radius: float = 0.1,       # Min acceptable circumradius
+                 max_tri_radius: float = 1.0,       # Max acceptable circumradius
+                 lambda_tri_small: float = 5.0,     # Penalty for small radii
+                 lambda_tri_large: float = 2.0,     # Penalty for large radii
+                ):
         # Initialize the base BBO environment
         #  - naive: if True, use simple reward = -val. else use pmp-shaped reward
         #  - step_size: scaling factor how much each action perturbs the step
@@ -66,120 +53,75 @@ class ShapeBoundary(BBO):
         # spline + knot control parameters
         self.ctrl_dim        = ctrl_state_dim                   # e.g. 36 control points (2D×18)
         self.num_coef        = ctrl_state_dim // 2
-        self.knot_dim        = n_internal_knots                 # e.g. 4 internal knots
-        self.state_dim       = self.ctrl_dim + self.knot_dim    # total dims
+        self.weight_dim = 0 if not train_weight else self.num_coef
+        self.knot_dim   = 0 if not train_knot   else n_internal_knots
         
+        # total state = [ctrl_pts (2D×num_coef) + weights + knot‐offsets]
+        self.state_dim  = self.ctrl_dim + self.weight_dim + self.knot_dim
 
         # now redefine your spaces to match the new dimension:
-        self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.state_dim,), dtype=np.float32
-        )
-        self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(self.state_dim,), dtype=np.float32
-        )
+        self.observation_space = spaces.Box(-4, 4, (self.state_dim,),  dtype=np.float32)
+        self.action_space      = spaces.Box(-1, 1, (self.state_dim,), dtype=np.float32)
 
         self.degree          = degree
         self.max_num_step    = max_num_step
         self.step_size       = step_size
         
         self.learn_ctrl   = train_ctrl
+        self.learn_weight = train_weight
         self.learn_knot   = train_knot
         
-        # Reward-term weights
+        # ——— Reward-term weights ———
         self.alpha_ctrl       = alpha_ctrl       # rq1: geometry (distance → target)
         self.alpha_knot       = alpha_knot       # rq2: knot-vector alignment
+        self.alpha_weight     = alpha_weight     # rq3: weight-vector alignment
         self.alpha_repulsion  = alpha_repulsion  # rq4: pairwise repulsion energy
-
-        self.alpha_vel        = alpha_vel        # velocity penalty
-        self.alpha_energy     = alpha_energy     # action-energy penalty
 
         self.repulse_k = repulse_k
         self.repulse_epsilon = repulse_epsilon
         
         self.sigma = 0.8 # desired “rest” distance
-        self.lambda_decay = lambda_decay  # decay factor for repulsion energy
         
         self.repulse_r_max = repulse_r_max  # max distance for attraction
         self.repulse_k_att = repulse_k_att  # spring constant for attraction
         
-        self.alpha_intersect   = 1.0    # overall weight for intersection penalty
-        self.lambda_intersect  = 100.0  # barrier strength
-        
-        self.d_min = 0.05
-        self.alpha_barrier = 0.5
-        
-        # spring weight & stiffness
-        self.alpha_spring = alpha_spring
-        self.k_spring     = k_spring
-        
-        # edge‐length constraints
-        self.min_edge_length  = min_edge_length
-        self.max_edge_length  = max_edge_length
-        self.lambda_edge_short = lambda_edge_short
-        self.lambda_edge_long  = lambda_edge_long
-        self.alpha_edge       = alpha_edge
-
-        # intersection / log‐barrier penalties
-        self.alpha_intersect   = alpha_intersect
-        self.lambda_intersect  = lambda_intersect
-        self.d_min             = d_min
-        self.alpha_barrier     = alpha_barrier
-        
-        # maximum allowed edge-length ratio between any two adjacent control points
-        self.lambda_edge_ratio = 2.0   # λ = max_edge / min_edge ≤ 2
-        
-        # Edge‐based constraint monitoring
-        # no edge may collapse below this length
-        self.min_edge_length = 0.05
-        # no edge may stretch beyond this length
-        self.max_edge_length = 2.0
-
-        # how strongly to penalize collapsed edges (< min)
-        self.lambda_edge_short = 10.0  
-        # how strongly to penalize over-stretched edges (> max)
-        self.lambda_edge_long  = 5.0   
-
         # weight of the combined edge‐constraint penalty in your reward
         self.alpha_edge = 0.2
         
+        # --- Triangle Quality Regularizer ---
+        self.alpha_tri_quality = alpha_tri_quality
+        self.min_tri_radius = min_tri_radius
+        self.max_tri_radius = max_tri_radius
+        self.lambda_tri_small = lambda_tri_small
+        self.lambda_tri_large = lambda_tri_large
+
+        
         # Initialize reward tracking
         self.last_rewards = {
-            'ctrl':       0.0,
-            'knot':       0.0,
-            'repulsion':  0.0,
-            'intersection': 0.0,
-            'shape_quality': 0.0,
-            'spring':     0.0,
-            'total':      0.0
+            'ctrl':      0.0,
+            'weight':    0.0,
+            'knot':      0.0,
+            'repulsion': 0.0,
+            'tri_quality': 0.0,
+            'total':     0.0
         }
 
         # spline sampling parameters
         self.ts   = np.linspace(0, 1, 80)
         self.verts = None
         
-        # Build a *uniform open* knot vector for 36 control points
-        # For 36 control points with degree 2, we need 36 + 2 + 1 = 39 knots
-        # Format: [0,0,0, internal_knots, 1,1,1] for degree 2
-        num_internal = 18 - self.degree - 1  # This should give us the right number of internal knots
-        internal_knots = [i/(num_internal+1) for i in range(1, num_internal+1)]
+        # Define initial & target circles
+        # Build a *uniform open* knot vector using exactly n_internal_knots
+        internal_knots = [i / (n_internal_knots + 1) for i in range(1, n_internal_knots + 1)]
         kv = [0.0] * (self.degree + 1) + internal_knots + [1.0] * (self.degree + 1)
         self.base_kv = kv
-
-        # Update knot_dim to match the number of internal knots we can actually vary
-        self.knot_dim = len(internal_knots)
-        self.state_dim = self.ctrl_dim + self.knot_dim
-        
-        self.observation_space = spaces.Box(-np.inf, np.inf,
-                                    (self.state_dim,), dtype=np.float32)
-        self.action_space      = spaces.Box(-1.0, 1.0,
-                                    (self.state_dim,), dtype=np.float32)
-
-
         # store the *uniform* internal knots so offsets are added to these
-        self.base_internal = np.array(internal_knots)
-
-        # Define improved "J" and target "E" shapes
-        J_pts = np.array([
+        self.base_internal = np.array(
+            kv[self.degree+1 : - (self.degree+1)]
+        )
+        
+        # 1. Letter J (starting shape) → Letter E (target shape)
+        start_pts_template = np.array([
             [-0.1, 2.0],  # Top left of horizontal bar
             [0.6, 2.0],   # Top right of horizontal bar
             [0.6, 1.8],   # Top right corner
@@ -199,9 +141,8 @@ class ShapeBoundary(BBO):
             [-0.35, 0.35],# Hook left side upper
             [-0.25, 0.3]  # Hook closure
         ])
-        
-        # Define 5-pointed star shape (target shape)
-        E_pts = np.array([
+
+        target_pts_template = np.array([
             [-0.35, -0.05], # Bottom left corner - rounded
             [-0.4, 0.1],    # Left bottom curve
             [-0.4, 0.6],    # Left side lower
@@ -221,8 +162,66 @@ class ShapeBoundary(BBO):
             [-0.2, 0.3],    # Left edge lower
             [0.35, -0.05]   # Bottom right corner - rounded
         ])
+
+        start_pts = self._densify_evenly(start_pts_template, self.num_coef)
+        target_pts = self._densify_evenly(target_pts_template, self.num_coef)
         
-        def densify_evenly(pts, target_count):
+        # Use weights to emphasize key structural points
+        start_weights = np.ones(self.num_coef)
+        target_weights = np.ones(self.num_coef)
+        
+
+        self.initial_weights = np.array(start_weights, dtype=np.float32)
+        
+        # Create the target spline (E shape)
+        self.target_spline = sp.NURBS(
+            degrees=[self.degree],
+            knot_vectors=[kv],
+            control_points=target_pts,
+            weights=target_weights
+        )
+        
+        self.start_weights = start_weights
+        # as a numpy array for easy math later
+        self.initial_weights = np.array(self.start_weights, dtype=np.float32)
+
+        # flatten for initial state (J shape)
+        self.initial_ctrl = start_pts.flatten()
+        
+        # Repulsive spring step
+        # Compute which control points to repel (non-adjacent in the Delaunay mesh)
+        init_ctrl_pts = start_pts # shape=(num_coef, 2)
+        delaunay = Delaunay(init_ctrl_pts)
+        # Collect all edges from each triangle
+        edges = {
+            tuple(sorted(e))
+            for tri in delaunay.simplices
+            for e in [(tri[0],tri[1]), (tri[1],tri[2]), (tri[0],tri[2])]
+        }
+        n_pts = init_ctrl_pts.shape[0]
+        # All i<j pairs that are not in the edges
+        self.non_adjacent_pairs = [
+            (i,j)
+            for i in range(n_pts) for j in range(i+1, n_pts)
+            if (i,j) not in edges
+        ]
+        # include the *adjacent* Delaunay edges too
+        self.edge_pairs = list(edges)
+        # final list of all springs
+        self.pair_list   = self.edge_pairs + self.non_adjacent_pairs
+
+        # Rendering
+        self.render_mode = render_mode
+        self.screen_width = 600
+        self.screen_height = 600
+        self.screen = None # Pygame window or surface
+        self.clock = None # Pygame clock for FPS control
+        self.isopen = True # Tracks if the window is open
+        
+        # Spline specific paramters
+        self.n_internal_knots = n_internal_knots  # Number of internal knots in the spline
+        
+    def _densify_evenly(self, pts, target_count):
             """
             Create evenly spaced points along the perimeter of a closed polygon
             """
@@ -265,111 +264,73 @@ class ShapeBoundary(BBO):
             # Ensure we have exactly target_count points
             while len(new_points) < target_count:
                 new_points.append(pts[-1].copy())
+                
+            new_points = np.asarray(new_points) 
+                
+            # 1) make both rings clockwise
+            if Polygon(new_points).area > 0:        # Shapely gives +area for CCW polygons
+                new_points = new_points[::-1]
+
+            # 2) move the left-most point to index 0 – that becomes the common seam
+            start = np.argmin(new_points[:, 0])
+            new_points = np.roll(new_points, -start, axis=0)
             
             return np.array(new_points[:target_count])
         
-        # Create target spline with same 36-point structure
-        # Build knot vector for 36 control points
-        target_num_internal = self.knot_dim
-        target_internal_knots = [i/(target_num_internal+1) for i in range(1, target_num_internal+1)]
-        target_kv = [0.0] * (self.degree + 1) + target_internal_knots + [1.0] * (self.degree + 1)
-
         
-        # For 36 control points, use n_subdivide = 2
-        self.n_subdivide = 2
-
-        # Densify to get 36 evenly spaced points
-        J_pts = densify_evenly(J_pts, 18)
-        E_pts = densify_evenly(E_pts, 18)
-
-        # Set dimensions based on densified points
-        self.num_coef   = len(J_pts)  # Should be 36
-        self.ctrl_dim   = self.num_coef * 2  # 72
-        self.state_dim  = self.ctrl_dim + self.knot_dim
-
-        # Create target spline from the densified star shape
-        self.target_spline = sp.BSpline(
-            degrees=[self.degree],
-            knot_vectors=[target_kv],
-            control_points=E_pts,        
-        )
-
-        self.initial_ctrl = J_pts.flatten()
-
-        # redefine your spaces to match
-        self.observation_space = spaces.Box(-np.inf, np.inf, (self.state_dim,), dtype=np.float32)
-        self.action_space      = spaces.Box(-1.0, 1.0, (self.state_dim,), dtype=np.float32)
-        
-        # Repulsive spring step
-        # Compute which control points to repel (non-adjacent in the Delaunay mesh)
-        init_ctrl_pts = J_pts # shape=(num_coef, 2)
-        delaunay = Delaunay(init_ctrl_pts)
-        # Collect all edges from each triangle
-        edges = {
-            tuple(sorted(e))
-            for tri in delaunay.simplices
-            for e in [(tri[0],tri[1]), (tri[1],tri[2]), (tri[0],tri[2])]
-        }
-        n_pts = init_ctrl_pts.shape[0]
-        # All i<j pairs that are not in the edges
-        self.non_adjacent_pairs = [
-            (i,j)
-            for i in range(n_pts) for j in range(i+1, n_pts)
-            if (i,j) not in edges
-        ]
-        # include the *adjacent* Delaunay edges too
-        self.edge_pairs = list(edges)
-        # final list of all springs
-        self.pair_list   = self.edge_pairs + self.non_adjacent_pairs
-        
-        # after self.edge_pairs = list(edges)
-        init_pts = init_ctrl_pts  # your np.array of initial control‐points
-        self.rest_lengths = [
-            np.linalg.norm(init_pts[i] - init_pts[j])
-            for i, j in self.edge_pairs
-        ]
-
-
-        # Rendering
-        self.render_mode = render_mode
-        self.screen_width = 600
-        self.screen_height = 600
-        self.screen = None # Pygame window or surface
-        self.clock = None # Pygame clock for FPS control
-        self.isopen = True # Tracks if the window is open
-        
-        # Spline specific paramters
-        self.degree = degree  # Degree of the spline (default is cubic, degree=3)
-        self.n_internal_knots = n_internal_knots  # Number of internal knots in the spline
-        self.base_internal = np.array(self.base_kv[self.degree+1 : - (self.degree+1)])
+    def set_state(self, state):
+        """Manually sets the environment's state from the outside."""
+        self.state = state.copy()
+        # We also update the previous control points to prevent a large velocity penalty
+        # from the jump to the new state.
+        if hasattr(self, 'state'):
+            self.prev_ctrl_pts, _, _ = self._unpack_state()
     
     def _unpack_state(self):
         # 1) control points
-        flat    = self.state[:self.ctrl_dim]
+        flat 	= self.state[:self.ctrl_dim]
         ctrl_pts = flat.reshape(self.num_coef, 2)
 
-        # 3) raw knot offsets
-        k_slice = slice(self.ctrl_dim, None)
-        raw_knot = self.state[k_slice] # shape=(knot_dim,)
-        # clamp offsets into [0,1]
-        raw_offset = np.clip(raw_knot, 0.0, 1.0)
-        # add them to your *uniform* internal knots
-        # ensure base_internal + offset stays within [0,1]
-        combined   = self.base_internal + raw_offset
-        combined   = np.clip(combined, 0.0, 1.0)
-        internal   = np.sort(combined)
+        # 2) weights
+        w_slice = slice(self.ctrl_dim, self.ctrl_dim + self.weight_dim)
+        weights = self.state[w_slice]      # may be length-0
+        if self.weight_dim == 0:
+            weights = np.ones(self.num_coef, dtype=np.float32)  # fabricate
 
-        # rebuild full open knot vector
-        kv = ([0.0] * (self.degree+1)
-            + internal.tolist()
-            + [1.0] * (self.degree+1))
+        # 3) knot vector
+        # If knots are part of the state, calculate the new knot vector.
+        # Otherwise, just return the original base knot vector.
+        if self.knot_dim > 0:
+            k_slice = slice(self.ctrl_dim + self.weight_dim, None)
+            raw_knot = self.state[k_slice]
 
-        return ctrl_pts, kv
+            # clamp each knot-offset
+            max_offsets = 1.0 - self.base_internal
+            raw_offset = np.clip(raw_knot, 0.0, max_offsets)
+
+            # build and sort your internal knots
+            internal = np.sort(self.base_internal + raw_offset)
+
+            # rebuild full open knot vector
+            kv = (
+                [0.0] * (self.degree + 1)
+                + internal.tolist()
+                + [1.0] * (self.degree + 1)
+            )
+        else:
+            # No knots in the state vector, so use the unmodified base knot vector
+            kv = self.base_kv
+
+        return ctrl_pts, weights, kv
     
     def _compute_ctrl_reward(self, dist: float) -> float:
         # amplify geometry term
         return -2.0 * dist
     
+    def _compute_weight_reward(self, weights: np.ndarray) -> float:
+        # encourage weights -> target weights (mean absolute error)
+        target = np.asarray(self.target_spline.weights, dtype=np.float32)
+        return -float(np.mean(np.abs(weights - target)))
     
     def _compute_knot_reward(self, internal: np.ndarray) -> float:
         # encourage internal knots -> target (mean absolute error ×2)
@@ -390,179 +351,82 @@ class ShapeBoundary(BBO):
         # penalize squared‐magnitude of the action vector (approx. work/energy)
         return -float(np.sum(action**2))
     
-    def _compute_enhanced_repulsion_energy(self, ctrl_pts):
+    def _compute_pairwise_energy(self, ctrl_pts: np.ndarray, k_rep: float, k_att: float) -> float:
         """
-        Repulsion energy for any two control points or point-to-edge
-        that come closer than self.d_min.
+        For each pair:
+         - if d < sigma: ½·k_rep·(σ - d)²  (repulsion)
+         - elif d > repulse_r_max:  ½·k_att·(d - σ)²  (weak attraction)
+         - else: 0
         """
         energy = 0.0
-        n_pts = ctrl_pts.shape[0]
-
-        # --- vertex-to-vertex repulsion ---
-        for i in range(n_pts):
-            for j in range(i+1, n_pts):
-                d = np.linalg.norm(ctrl_pts[i] - ctrl_pts[j])
-                if d < self.d_min:
-                    # 1/(d - d0 + eps)
-                    energy += self.repulse_k / (d - self.d_min + self.repulse_epsilon)
-
-        # --- vertex-to-edge repulsion ---
-        # For each vertex i, check its distance to every non-adjacent segment (j → j+1)
-        for i in range(n_pts):
-            p = ctrl_pts[i]
-            for j in range(n_pts):
-                next_j = (j + 1) % n_pts
-                # skip edges that share the vertex
-                if i in (j, next_j):
-                    continue
-                p1, p2 = ctrl_pts[j], ctrl_pts[next_j]
-                # compute point→segment distance; _segment_distance takes (p1,p2,p3,p4)
-                # so we pass p twice to collapse one segment
-                d_seg = _segment_distance(self, p1, p2, p, p)
-                if d_seg < self.d_min:
-                    energy += self.repulse_k / (d_seg - self.d_min + self.repulse_epsilon)
-
+        for i, j in self.pair_list:
+            d = np.linalg.norm(ctrl_pts[i] - ctrl_pts[j]) + self.repulse_epsilon
+            if d < self.sigma:
+                δ = self.sigma - d
+                energy += 0.5 * k_rep * (δ * δ) 
+            elif d > self.repulse_r_max:
+                Δ = d - self.sigma
+                energy += 0.5 * k_att * (Δ * Δ) 
         return energy
-
-
-    def _compute_intersection_penalty(self, ctrl_pts):
-        """
-        Enhanced intersection penalty with prevention and smooth gradients
-        """
-        penalty = 0.0
-        n = ctrl_pts.shape[0]
-        
-        # 1. PREVENTION: Penalize segments getting too close (before intersection)
-        near_intersection_penalty = 0.0
-        
-        # 2. PUNISHMENT: Heavily penalize actual intersections
-        actual_intersection_penalty = 0.0
-        
-        for i in range(n):
-            p1, p2 = ctrl_pts[i], ctrl_pts[(i+1) % n]
-            
-            for j in range(i+2, n):
-                if i == 0 and j == n-1:  # Skip wrap-around adjacent pair
-                    continue
-                    
-                p3, p4 = ctrl_pts[j], ctrl_pts[(j+1) % n]
-                
-                # Calculate minimum distance between segments
-                min_dist = _segment_distance(self, p1, p2, p3, p4)
-
-                
-                # PREVENTION: Exponential penalty as segments get close
-                if min_dist < 0.1:  # Danger zone
-                    near_intersection_penalty += 500.0 * np.exp(-10.0 * min_dist)
-                
-                # PUNISHMENT: Massive penalty for actual intersections
-                if segments_intersect(p1, p2, p3, p4):
-                    actual_intersection_penalty += 10000.0  # Much larger base penalty
-                    
-                    # Additional penalty based on intersection severity
-                    intersect_depth = self._calculate_intersection_depth(p1, p2, p3, p4)
-                    actual_intersection_penalty += intersect_depth * 5000.0
-        
-        return near_intersection_penalty + actual_intersection_penalty  
-
-    def _calculate_intersection_depth(self, p1, p2, p3, p4):
-        """
-        Calculate how severely two segments intersect
-        """
-        # Find intersection point using line intersection formula
-        x1, y1 = p1
-        x2, y2 = p2
-        x3, y3 = p3
-        x4, y4 = p4
-        
-        denom = (x1-x2)*(y3-y4) - (y1-y2)*(x3-x4)
-        if abs(denom) < 1e-10:
-            return 0.0  # Parallel lines
-        
-        t = ((x1-x3)*(y3-y4) - (y1-y3)*(x3-x4)) / denom
-        u = -((x1-x2)*(y1-y3) - (y1-y2)*(x1-x3)) / denom
-        
-        # Both t and u should be in [0,1] for intersection
-        if 0 <= t <= 1 and 0 <= u <= 1:
-            # Intersection point
-            ix = x1 + t*(x2-x1)
-            iy = y1 + t*(y2-y1)
-            
-            # Measure how far from endpoints (deeper intersection = worse)
-            dist_from_ends = min(
-                np.linalg.norm([ix-x1, iy-y1]),
-                np.linalg.norm([ix-x2, iy-y2]),
-                np.linalg.norm([ix-x3, iy-y3]),
-                np.linalg.norm([ix-x4, iy-y4])
-            )
-            
-            return 1.0 / (dist_from_ends + 1e-6)  # Deeper = higher penalty
-        
-        return 0.0
-
-    def _compute_shape_quality_penalty(self, ctrl_pts):
-        """
-        Additional penalty for degenerate shapes
-        """
-        penalty = 0.0
-        
-        # Check for overlapping control points
-        n = ctrl_pts.shape[0]
-        for i in range(n):
-            for j in range(i+1, n):
-                d = np.linalg.norm(ctrl_pts[i] - ctrl_pts[j])
-                if d < 1e-3:  # Nearly identical points
-                    penalty += 1000.0 * (1e-3 - d)
-        
-        # Check for extreme aspect ratios
-        x_range = np.ptp(ctrl_pts[:, 0])  # Peak-to-peak (max - min)
-        y_range = np.ptp(ctrl_pts[:, 1])
-        
-        if min(x_range, y_range) > 0:
-            aspect_ratio = max(x_range, y_range) / min(x_range, y_range)
-            if aspect_ratio > 10.0:  # Very elongated shape
-                penalty += 10.0 * (aspect_ratio - 10.0)
-        
-        return penalty
     
-    def _compute_spring_energy(self, ctrl_pts: np.ndarray) -> float:
+    def _compute_triangle_quality_penalty(self, ctrl_pts: np.ndarray) -> float:
         """
-        Sum ½·k·(d - d0)**2 over all adjacent edges.
+        Computes a penalty based on the quality of triangles in the Delaunay mesh.
+        Penalizes triangles with circumradii that are too small or too large.
         """
-        energy = 0.0
-        for idx, (i, j) in enumerate(self.edge_pairs):
-            d  = np.linalg.norm(ctrl_pts[i] - ctrl_pts[j])
-            d0 = self.rest_lengths[idx]
-            # you can also make k dynamic, e.g. k = self.k_spring / d0
-            k  = self.k_spring
-            energy += 0.5 * k * (d - d0)**2
-        return energy
+        # Ensure there are enough points for at least one triangle
+        if len(ctrl_pts) < 3:
+            return 0.0
 
-    def _compute_edge_length_penalty(self, ctrl_pts: np.ndarray) -> float:
-        """
-        Penalize edges that are too short or too long.
-        """
-        penalty = 0.0
-        n = ctrl_pts.shape[0]
-        for i in range(n):
-            j = (i + 1) % n
-            d = np.linalg.norm(ctrl_pts[i] - ctrl_pts[j])
-            if d < self.min_edge_length:
-                # quadratic penalty for collapse
-                penalty += self.lambda_edge_short * (self.min_edge_length - d)**2
-            elif d > self.max_edge_length:
-                # quadratic penalty for overstretch
-                penalty += self.lambda_edge_long * (d - self.max_edge_length)**2
-        return penalty
+        try:
+            # 1. Perform Delaunay triangulation
+            delaunay = Delaunay(ctrl_pts)
+        except Exception: # Catches QHullError for collinear/degenerate points
+            return MAX_ACT # Return a large penalty for degenerate configurations
+
+        total_penalty = 0.0
+        
+        # Iterate over each triangle (simplex) in the mesh
+        for tri_indices in delaunay.simplices:
+            p1, p2, p3 = ctrl_pts[tri_indices]
+
+            # 2. Calculate side lengths of the triangle
+            a = np.linalg.norm(p2 - p3)
+            b = np.linalg.norm(p1 - p3)
+            c = np.linalg.norm(p1 - p2)
+
+            # Avoid division by zero for degenerate triangles (zero area)
+            if a * b * c < 1e-9:
+                continue
+
+            # 3. Calculate area using Heron's formula for robustness
+            s = (a + b + c) / 2.0
+            area_squared = s * (s - a) * (s - b) * (s - c)
+            if area_squared <= 1e-9: # Check for non-positive area from floating point errors
+                continue
+            area = np.sqrt(area_squared)
+
+            # 4. Calculate the circumradius: R = abc / 4A
+            circum_radius = (a * b * c) / (4.0 * area)
+
+            # 5. Calculate penalty if radius is outside the acceptable range
+            small_r_penalty = max(0.0, self.min_tri_radius - circum_radius)
+            large_r_penalty = max(0.0, circum_radius - self.max_tri_radius)
+            
+            total_penalty += self.lambda_tri_small * small_r_penalty + self.lambda_tri_large * large_r_penalty
+        
+        return total_penalty
 
     def step(self, action):
-        # --- unpack old ctrl_pts for velocity term ---
-        old_ctrl, _ = self._unpack_state()
+        # unpack old ctrl_pts for velocity term
+        old_ctrl, _, _ = self._unpack_state()
         self.prev_ctrl_pts = old_ctrl.copy()
 
         # optionally disable learning of some params
         if not self.learn_ctrl:
             action[:self.ctrl_dim] = 0
+        if not self.learn_weight:
+            action[self.ctrl_dim : self.ctrl_dim + self.weight_dim] = 0
         if not self.learn_knot:
             action[-self.knot_dim :] = 0
 
@@ -570,13 +434,29 @@ class ShapeBoundary(BBO):
         self.state += self.step_size * action
 
         # 2) Unpack into control points, weights, and knot vector
-        ctrl_pts, kv = self._unpack_state()
+        ctrl_pts, weights, kv = self._unpack_state()
+
+        #  dynamic repulsion/attraction strength
+        t_norm = self.num_step / float(self.max_num_step)
+        # e.g. ramp up repulsion over time
+        k_dyn = self.repulse_k * (0.5 + 0.5 * t_norm)  
+        k_att_dyn = self.repulse_k_att * (1.0 - t_norm)   # optional: attraction fades out
+        rep_energy = self._compute_pairwise_energy(ctrl_pts, k_dyn, k_att_dyn) \
+                     if self.learn_ctrl else 0.0
+        # rq4: convert raw repulsion‐energy into a reward term
+        reward_rep = -self.alpha_repulsion * rep_energy
         
+        # Compute Triangle Quality Penalty
+        tri_penalty = self._compute_triangle_quality_penalty(ctrl_pts)
+        reward_tri_quality = -self.alpha_tri_quality * tri_penalty
+
         # 3) Build NURBS with all three sets of learnable parameters
-        spline = sp.BSpline(
+        w_for_spline = weights if self.weight_dim else np.ones(self.num_coef)
+        spline = sp.NURBS(
             degrees=[self.degree],
             knot_vectors=[kv],
             control_points=ctrl_pts,
+            weights=w_for_spline.tolist()
         )
 
         # 4) Sample & compute geometry exactly as before
@@ -589,79 +469,49 @@ class ShapeBoundary(BBO):
 
         # 6) Compute individual sub‐rewards
         # 6a) Control‐point geometry reward
-        dist = self._distance(spline, self.target_spline)
-        reward_ctrl = self._compute_ctrl_reward(dist) if self.learn_ctrl else 0.0
+        coords = spline.evaluate(self.ts.reshape(-1, 1))
+        (
+            para_coords,
+            phys_coords,
+            phys_diff,
+            dist_arr,
+            conv_norm,
+            deriv1,
+            deriv2,
+        ) = self.target_spline.proximities(coords, return_verbose=True)
+        mean_dist = float(dist_arr.mean())
+        reward_ctrl = self._compute_ctrl_reward(mean_dist) if self.learn_ctrl else 0.0
+
+        # 6b) Weight reward
+        reward_weight = self._compute_weight_reward(weights) if self.learn_weight else 0.0
+
+        # 6c) Knot reward
         internal = np.array(kv[self.degree+1:-(self.degree+1)])
         reward_knot = self._compute_knot_reward(internal) if self.learn_knot else 0.0
-        
-        reward_vel = self._compute_velocity_reward(ctrl_pts) if self.learn_ctrl else 0.0
-        reward_energy = self._compute_energy_penalty(action)
-        
-        # 2. Compute constraint penalties with enhanced methods
-        rep_energy = self._compute_enhanced_repulsion_energy(ctrl_pts)
-        intersection_penalty = self._compute_intersection_penalty(ctrl_pts)
-        shape_penalty = self._compute_shape_quality_penalty(ctrl_pts)
-        spring_energy      = self._compute_spring_energy(ctrl_pts)
-        edge_penalty = self._compute_edge_length_penalty(ctrl_pts)
-        
-        # 3. Make constraints dominant early
-        t_norm = self.num_step / float(self.max_num_step)
-        
-        # Geometry reward should be suppressed if constraints are violated
-        constraint_violation = rep_energy + intersection_penalty + shape_penalty
-        if constraint_violation > 1000:  # Significant violations
-            geometry_suppression = 0.1  # Reduce geometry reward to 10%
-        else:
-            geometry_suppression = 1.0
 
-        # 6f) Dynamic weighting via exponential decay
-        decay = math.exp(-self.lambda_decay * t_norm)
-        alpha_ctrl_dyn   = self.alpha_ctrl   *  decay
-        alpha_knot_dyn   = self.alpha_knot   * (1 - decay) * 0.5
+        # 6f) Simplified Reward Calculation
+        # The total reward is based on the distance to target and a repulsion penalty.
+        total_reward = reward_ctrl + reward_rep + reward_tri_quality
 
-        # 6g) Combine everything with enhanced constraints
-        total_reward = (
-            alpha_ctrl_dyn * reward_ctrl * geometry_suppression +
-            alpha_knot_dyn * reward_knot +
-            self.alpha_vel * reward_vel +
-            self.alpha_energy * reward_energy +
-            -self.alpha_repulsion * rep_energy +
-            -self.alpha_intersect * intersection_penalty +
-            -self.alpha_barrier * shape_penalty +
-            - self.alpha_spring     * spring_energy +
-            - self.alpha_edge       * edge_penalty
-        )
-
-        # 7) Save for analysis/plotting - include new constraint info
+        # 7) Save for analysis/plotting
+        # We still save all components so the plots work, but only ctrl_reward affects the agent's goal.
         self.last_rewards = {
-            'ctrl':         reward_ctrl,
-            'knot':         reward_knot,
-            'repulsion':    -rep_energy,
-            'intersection': -intersection_penalty,
-            'shape_quality': -shape_penalty,
-            'vel':          reward_vel,
-            'energy':       reward_energy,
-            'spring':       -spring_energy,
-            'edge':         -edge_penalty,
-            'total':        total_reward
+            'ctrl':      reward_ctrl,
+            'knot':      reward_knot,
+            'weight':    reward_weight,
+            'repulsion': reward_rep,
+            'tri_quality': reward_tri_quality,
+            'total':     total_reward
         }
-
 
         # 8) Termination check
         done = (polygon.area == 0) or (self.num_step >= self.max_num_step)
         self.num_step += 1
 
-        # 9) Return new state, reward, done, truncated, info with enhanced info
+        # 9) Return new state, reward, done, truncated, info
         return self.state.copy(), total_reward, done, False, {
-            "repulsion_energy": rep_energy,
-            "intersection_penalty": intersection_penalty,
-            "shape_penalty": shape_penalty,
-            "spring_energy": spring_energy,
-            "edge_penalty": edge_penalty,
-            "constraint_violation": constraint_violation,
-            "geometry_suppression": geometry_suppression
-        }                                     
-
+            "repulsion_energy": rep_energy
+        }
     
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         # Calls the parent class BBO's reset method
@@ -676,24 +526,25 @@ class ShapeBoundary(BBO):
         return self.reset_at(mode='half_random'), {}
     
     def reset_at(self, mode='unused'):
-        """Start on the J shape, with control points and zero knot offsets."""
-
+        """Start on the J shape, with control points, weights, and zero knot offsets."""
         self.num_step = 0
 
         # 1) control‐point portion = the big circle (flattened)
-        ctrl   = self.initial_ctrl.copy()            # length = ctrl_dim
+        ctrl    = self.initial_ctrl.copy()            # shape=(ctrl_dim,)
 
-        # 3) knot‐offsets portion = zeros
-        zeros   = np.zeros(self.knot_dim, dtype=np.float32)
-
-        # → full state vector
-        self.state = np.concatenate([ctrl, zeros])
+        parts = [ctrl]
+        if self.weight_dim:
+            parts.append(self.initial_weights.copy())
+        if self.knot_dim:
+            parts.append(np.zeros(self.knot_dim, dtype=np.float32))
+        self.state = np.concatenate(parts)
 
         # Precompute rendering verts exactly as before, but now using our new unpack:
-        ctrl_pts, kv = self._unpack_state()
-        spline   = sp.BSpline(degrees=[self.degree],
+        ctrl_pts, weights, kv = self._unpack_state()
+        spline   = sp.NURBS(degrees=[self.degree],
                             knot_vectors=[kv],
-                            control_points=ctrl_pts)
+                            control_points=ctrl_pts,
+                            weights=weights.tolist())
         coords   = spline.evaluate(self.ts.reshape(-1,1))
         scaled   = coords/np.max(np.abs(coords))*100 + 300
         self.verts = list(zip(scaled[:,0], scaled[:,1]))
@@ -735,7 +586,6 @@ class ShapeBoundary(BBO):
         # Takes the finished drawing on surf and puts it onto the visible screen
         self.screen.blit(self.surf, (0, 0))
         
-        
         if self.render_mode == "human":
             # handles live rendering in a window, with proper frame timing
             pygame.event.pump()
@@ -754,8 +604,4 @@ class ShapeBoundary(BBO):
             pygame.quit()
             self.isopen = False
             
-    def _distance(self, a, b, samples=100): 
-        t = np.linspace(0,1,samples).reshape(-1,1) # Sample 100 values in [0, 1]
-        pa = a.evaluate(t) # Get 100 (x, y) points from spline a
-        pb = b.evaluate(t) # Get 100 (x, y) points from spline b
-        return np.mean(np.linalg.norm(pa - pb, axis=1)) # Average L2 distance between corresponding points
+    

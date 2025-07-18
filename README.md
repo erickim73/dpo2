@@ -4,8 +4,11 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
 ## Introduction
-- **Differential Policy Optimization (DPO)** is a reinforcement learning method that guides systems toward desired outcomes using principles from physics and optimal control. Unlike traditional RL methods that learn indirectly, DPO directly shapes local actions to create smooth, energy-efficient trajectories.
----
+**Differential Policy Optimization (DPO)** is a reinforcement learning method that helps systems move smoothly and efficiently from one state to another.
+
+Unlike traditional RL, which learns by estimating long-term rewards, DPO focuses on making small, local improvements at each step. It uses ideas from physics and control theory to guide each action in a way that’s consistent with how real-world systems behave.
+
+This makes DPO especially useful for problems where path matters, like deforming shapes, simulating physical systems, or planning smooth omvements, because it learns how to change things gradually and reliably.
 
 ## Environment Overview
 DPO is evaluated on three challenging scientific computing tasks designed to test its performance under complex, simulation-defined objectives:

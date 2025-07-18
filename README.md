@@ -13,18 +13,17 @@ This makes DPO especially useful for problems where path matters, like deforming
 ## Environment Overview
 DPO is evaluated on three challenging scientific computing tasks designed to test its performance under complex, simulation-defined objectives:
 
-1. **Materials Deformation:**
-Deformable 2D shapes represented by spline control points are optimized to match a target shape. The reward functional encourages smooth, structurally plausible deformations and penalizes geometric irregularities or oscillations.
+1. **Materials Deformation:**  
+The agent deforms 2D shapes, represented by splines, to match a given target shape. This task tests the ability to generate smooth, stable shape transitions while avoiding collisions and irregularities.
 
-2. **Topological Deformation:**
-A coarse spatial grid is controlled while reward is computed on a finer resolution, mimicking multi-scale PDE problems. The environment encourages alignment between coarse control and high-resolution behavior, making this ideal for testing spatial generalization.
+2. **Topological Deformation:**  
+The agent modifies a low-resolution grid, but the results are evaluated on a high-resolution version of the shape. This tests whether the agent can make accurate changes even with limited control.
 
-3. **Molecular Dynamics:**
-The agent modifies atomic configurations to reach low-energy molecular conformations. The reward is computed via physics-based energy simulations (e.g., PyRosetta), testing the algorithm’s ability to handle nonlocal, highly structured dynamics.
+3. **Molecular Dynamics:**  
+The agent adjusts molecular structures to minimize physical energy. This task evaluates the model’s ability to navigate complex, high-dimensional energy landscapes.
+
 
 ## Statistical Analysis on Benchmarking Results
-
-We perform benchmarking using 10 different random seeds, with each seed generating over 200 test episodes.
 
 The table below reports the **mean ± standard deviation** of final evaluation costs across 15 algorithms (and their variants).
 
@@ -60,11 +59,8 @@ The table below reports the **mean ± standard deviation** of final evaluation c
 
 Splines are smooth curves defined by a few adjustable points (control points). They efficiently represent shapes, making it easy to smoothly change from one shape to another. DPO optimizes these control points to achieve precise, stable transformations.
 
----
 
-### Why Use Splines Here?
-
-We use splines to:
+Splines are used to
 - Represent 2D shapes as control point vectors
 - Enable smooth, localized deformations
 - Compute geometric properties like curvature and intersection
@@ -81,18 +77,17 @@ We use **Differential Policy Optimization (DPO)** to learn a policy that **itera
 The learning setup:
 - **State**: current spline (i.e., control point vector)
 - **Action**: pointwise adjustment to control points
-- **Reward**: penalizes shape mismatch, irregular curvature, intersection, or unstable triangulation (via circumball constraints)
-- **Policy**: learned via DPO’s differential dual framework, which enables stable and sample-efficient updates
+- **Reward**: penalizes shape mismatch, irregular curvature, intersection, or unstable triangulation 
+- **Policy**: learned through DPO’s differential dual framework, which enables stable and sample-efficient updates
 
 Because DPO works pointwise and incorporates a Hamiltonian prior, the resulting deformations are **physically consistent**, smooth, and converge quickly to the desired configuration.
 
 ---
 ## Demo 1: Initial implementation; slow and inaccurate alignment.
-- Final shape does not align well with the target "E"
 - Progression of spline is too slow
-- Reward component and repulsion plot show sharp spikes
-  - Indicates frequent intersection of control points
+- Frequent intersection of control points
 - Control points aren't even spaced out
+- Final shape does not align well with the target "E"
 
 ![Alt text](output/letters_spline_deformation0.gif)
 
@@ -102,7 +97,7 @@ Because DPO works pointwise and incorporates a Hamiltonian prior, the resulting 
   - **Weights** control how strongly each point pulls the curve
 - **Reward Components**:
   - **Control Points**: Penalizes distance between current and target spline shapes.
-  - **Weights**: Penalizes error in NURBS weights.
+  - **Weights**: Penalizes error in weights.
   - **Knots**: Penalizes difference in internal knot positions.
   - **Velocity Penalty**: Penalizes rapid control point movement
   - **Energy Penalty**: Penalizes large-magnitude actions

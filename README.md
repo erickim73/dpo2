@@ -137,15 +137,15 @@ Because DPO works pointwise and incorporates a Hamiltonian prior, the resulting 
 - Ensures consistent control point ordering to prevent twisting or mismatches.
 
 #### 2. Reward Function Design
-- **Spline-to-Spline Distance**:  
-  Measures the geometric distance between the two full spline curves (not just their control points).  
-  - More accurate because it compares actual shape, not just control point proximity.
+- **Spline-to-Spline Distance**: 
+  - Measures the geometric distance between the two full spline curves (not just their control points).  
+    - More accurate because it compares actual shape, not just control point proximity.
 - **Repulsion Energy**:  
-  Prevents clustering by adding repulsive forces between close, non-adjacent control points.
+  - Prevents clustering by adding repulsive forces between close, non-adjacent control points.
 - **Edge Length Constraints**:  
-  Penalizes edges that are too short or too long to keep mesh quality consistent.
+  - Penalizes edges that are too short or too long to keep mesh quality consistent.
 - **Triangle Quality**:  
-  Uses Delaunay triangulation to penalize triangles with bad circumradius ratios.
+  - Uses Delaunay triangulation to penalize triangles with bad circumradius ratios.
 
 ### 3. Loss Terms and Movement Penalties
 - **Energy Penalty**:  

@@ -111,7 +111,7 @@ Because DPO works pointwise and incorporates a Hamiltonian prior, the resulting 
   - Delaunay Triangulation efficiently connects nearby points to enforce geometric constraints.
 - Added **more control points** for better spline shape
 - Evenly **spaced out** control points along spline shape
-- Added *more examples**
+- Added **more examples**
 
 ![Alt text](output/letters_spline_deformation2.gif)
 ![Alt text](output/letters_spline_deformation3.gif)

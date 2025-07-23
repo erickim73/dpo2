@@ -83,3 +83,29 @@ def train(env_name, num_optimize_iters, exploit_threshold=0, zero_order=True, sa
     # Final save.
     torch.save(main_net.state_dict(), save_path)
     print('\nDone differential policy optimization training.')
+
+
+if __name__ == "__main__":
+    import argparse, ast
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--env_name", required=True,
+                        help="Environment string, e.g. shape_boundary_nowt")
+    parser.add_argument("--num_optimize_iters", default="400,600,800,1000",
+                        help="Comma-separated list of optimisation iters per stage")
+    parser.add_argument("--exploit_threshold", type=int, default=0,
+                        help="Stage after which to enable reinforcement term")
+    parser.add_argument("--zero_order", action="store_true", default=True,
+                        help="Use zero-order (derivative) network")
+    parser.add_argument("--first_order", dest="zero_order",
+                        action="store_false",
+                        help="Use first-order (value) network instead")
+    args = parser.parse_args()
+
+    # Convert the comma list to a list of ints
+    num_iters = [int(x) for x in args.num_optimize_iters.split(",")]
+
+    train(env_name=args.env_name,
+          num_optimize_iters=num_iters,
+          exploit_threshold=args.exploit_threshold,
+          zero_order=args.zero_order)

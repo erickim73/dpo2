@@ -4,7 +4,7 @@ from scipy import stats
 import pandas as pd
 import torch
 import pyrosetta
-from envs import ShapeBoundary, Shape, Molecule
+from envs import ShapeBoundary, Shape, Molecule, ShapeBoundaryNoWeight   
 from common_nets import Mlp
 from policy import Policy
 
@@ -16,7 +16,24 @@ def get_environment(env_name):
     if env_name == 'naive_shape_boundary':
         return ShapeBoundary(naive=True, render_mode='rgb_array')
     if env_name == 'shape_boundary':
-        return ShapeBoundary(render_mode='rgb_array')
+        return ShapeBoundary(
+            naive=False,
+            ctrl_state_dim=36,
+            n_internal_knots=14,
+            degree=3,
+            max_num_step=150,
+            step_size=5e-2,
+            render_mode='rgb_array',
+            train_ctrl=True,
+            train_weight=True,
+            train_knot=True,
+            alpha_ctrl=0.4,
+            alpha_weight=0.2,
+            alpha_knot=0.2,
+            alpha_repulsion=0.2,
+            alpha_vel=0.1,
+            alpha_energy=0.05,
+        )
     if env_name == 'naive_shape':
         return Shape(naive=True, render_mode='rgb_array')
     if env_name == 'shape':
@@ -83,14 +100,18 @@ def get_train_params(env_name, param_file='params.csv'):
     return rate, num_traj, step_size, lr, batch_size, log_interval
 
 def setup_main_net(env_name, zero_order, state_dim):
+    """
+    Build the neural network used by DPO.
+      • zero_order  → derivative network (output == action dim == state_dim)
+      • first_order → value network      (scalar output)
+    """
     layer_dims = get_architectures(env_name, zero_order)
-    if zero_order:
-        output_dim = 1
-    else:
-        output_dim = state_dim
-    main_net = Mlp(input_dim=state_dim, output_dim=output_dim, 
-                    layer_dims=layer_dims, activation='relu').to(DEVICE)
-    
+    output_dim = state_dim if zero_order else 1   # ← flipped
+
+    main_net = Mlp(input_dim=state_dim,
+                   output_dim=output_dim,
+                   layer_dims=layer_dims,
+                   activation='relu').to(DEVICE)
     return main_net
 
 

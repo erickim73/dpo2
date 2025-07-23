@@ -28,7 +28,7 @@ class Molecule(BBO):
         # State and action info
         self.state_dim = self.num_residue*2
         self.min_val = -180; self.max_val = 180
-        self.observation_space = spaces.Box(low=self.min_val, high=self.max_val, shape=(self.state_dim,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=self.min_val, high=self.max_val, shape=(self.state_dim), dtype=np.float32)
         self.min_act = -90; self.max_act = 90 
         self.action_space = spaces.Box(low=self.min_act, high=self.max_act, shape=(self.state_dim,), dtype=np.float32)      
         self.state = None
